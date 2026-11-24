@@ -21,6 +21,8 @@ MongoDB Atlas emulation with Atlas Admin API v2 and Atlas Data API v1. In-memory
 
 ### Database Users
 
+Database user creation requires an existing project and returns `404 GROUP_NOT_FOUND` for an unknown `groupId`.
+
 - `GET /api/atlas/v2/groups/:groupId/databaseUsers` — list database users
 - `GET /api/atlas/v2/groups/:groupId/databaseUsers/admin/:username` — get database user
 - `POST /api/atlas/v2/groups/:groupId/databaseUsers` — create database user

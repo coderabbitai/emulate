@@ -146,6 +146,45 @@ describe("MongoAtlas plugin - Clusters", () => {
   });
 });
 
+describe("MongoAtlas plugin - Database users", () => {
+  it("rejects creating a database user for a missing project without storing it", async () => {
+    const { app, store } = createTestApp();
+    const usersBefore = getMongoAtlasStore(store).users.all();
+    const res = await app.request(`${base}/api/atlas/v2/groups/missing-project/databaseUsers`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ username: "orphan", roles: [] }),
+    });
+
+    expect.soft(res.status).toBe(404);
+    expect.soft(await res.json()).toEqual({
+      error: 404,
+      errorCode: "GROUP_NOT_FOUND",
+      detail: "Group 'missing-project' not found.",
+    });
+    expect(getMongoAtlasStore(store).users.all()).toEqual(usersBefore);
+  });
+
+  it("creates a database user in an existing project", async () => {
+    const { app, store } = createTestApp();
+    const groupId = getMongoAtlasStore(store).projects.all()[0]!.group_id;
+    const roles = [{ databaseName: "app", roleName: "readWrite" }];
+    const res = await app.request(`${base}/api/atlas/v2/groups/${groupId}/databaseUsers`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ username: "app-user", roles }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({
+      username: "app-user",
+      groupId,
+      databaseName: "admin",
+      roles,
+    });
+  });
+});
+
 describe("MongoAtlas plugin - Data API", () => {
   let app: Hono;
 

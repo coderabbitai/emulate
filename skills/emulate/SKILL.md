@@ -358,6 +358,8 @@ LINEAR_EMULATOR_URL=http://localhost:4012
 
 Then use these in your app to construct API and OAuth URLs. See each service's skill for SDK-specific override instructions.
 
+MongoDB Atlas database user creation requires an existing project and returns `404 GROUP_NOT_FOUND` for an unknown `groupId`.
+
 ## Framework Integration (Embedded Mode)
 
 The `@emulators/adapter-next` package embeds emulators directly into a Next.js app on the same origin. See the **next** skill (`skills/next/SKILL.md`) for full setup, Auth.js configuration, persistence, and font tracing details.

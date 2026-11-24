@@ -260,6 +260,10 @@ export function adminRoutes(ctx: RouteContext): void {
   // Create database user
   app.post("/api/atlas/v2/groups/:groupId/databaseUsers", async (c) => {
     const groupId = c.req.param("groupId");
+    const project = ms().projects.findOneBy("group_id", groupId);
+    if (!project) {
+      return mongoError(c, "GROUP_NOT_FOUND", `Group '${groupId}' not found.`, 404);
+    }
     const body = await c.req.json<{
       username?: string;
       password?: string;

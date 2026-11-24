@@ -20,7 +20,7 @@ All services start with sensible defaults. No config file needed:
 - **AWS** on `http://localhost:4007`
 - **Resend** on `http://localhost:4008`
 - **Stripe** on `http://localhost:4009`
-- **MongoDB Atlas** on `http://localhost:4010`
+- **MongoDB Atlas** on `http://localhost:4010`. Database user creation requires an existing project; unknown projects return `404 GROUP_NOT_FOUND`.
 - **Clerk** on `http://localhost:4011`
 - **Linear** on `http://localhost:4012`
 - **Twilio** on `http://localhost:4013`
