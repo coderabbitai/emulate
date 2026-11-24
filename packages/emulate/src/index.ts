@@ -28,6 +28,10 @@ GitHub API coverage:
 Linear API coverage:
   Issue queries and mutations include numeric priority and derived priorityLabel fields.
 
+Okta OAuth sign-in:
+  Only ACTIVE users appear in the picker and can complete authorization callbacks.
+  Inactive callbacks return HTTP 400; this check does not revoke previously issued grants or tokens.
+
 Chargebee API coverage:
   Subscription lifecycle, invoicing and the time machine, which advances the clock and runs
   every renewal it makes due. Proration, tax, dunning and estimates return 501 not_emulated

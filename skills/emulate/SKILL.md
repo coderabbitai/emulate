@@ -33,6 +33,10 @@ All services start with sensible defaults:
 | Linear    | 4012        |
 | Twilio    | 4013        |
 
+### Okta sign-in
+
+Only `ACTIVE` users can start a new OAuth sign-in. Other users are omitted from the picker. Callback submissions selecting a user who is not `ACTIVE` return HTTP `400` before a code is issued, including direct submissions and forms loaded before the status changed. This eligibility check does not revoke grants or tokens issued earlier.
+
 ## CLI
 
 ```bash

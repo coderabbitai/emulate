@@ -411,7 +411,7 @@ export function oauthRoutes({ app, store, baseUrl, tokenMap }: RouteContext): vo
       clientName = client.name;
     }
 
-    const users = oktaStore.users.all();
+    const users = oktaStore.users.all().filter((user) => user.status === "ACTIVE");
     const callbackPath = `${buildOAuthBasePath(authServerId)}/authorize/callback`;
     const buttons = users
       .map((user) =>
@@ -445,7 +445,7 @@ export function oauthRoutes({ app, store, baseUrl, tokenMap }: RouteContext): vo
       renderCardPage(
         "Sign in with Okta",
         subtitle,
-        users.length > 0 ? buttons : '<p class="empty">No users in the emulator store.</p>',
+        users.length > 0 ? buttons : '<p class="empty">No active users in the emulator store.</p>',
         SERVICE_LABEL,
       ),
     );
@@ -479,6 +479,11 @@ export function oauthRoutes({ app, store, baseUrl, tokenMap }: RouteContext): vo
     const user = findUserByRef(oktaStore, userRef);
     if (!user) {
       return c.html(renderErrorPage("Unknown user", "The selected user is not available.", SERVICE_LABEL), 400);
+    }
+
+    // Okta only lets an ACTIVE user sign in; a suspended, deactivated, staged, or provisioned user is refused.
+    if (user.status !== "ACTIVE") {
+      return c.html(renderErrorPage("User not active", "The selected user cannot sign in.", SERVICE_LABEL), 400);
     }
 
     const configuredClients = getClientsForServer(oktaStore.oauthClients.all(), authServerId);

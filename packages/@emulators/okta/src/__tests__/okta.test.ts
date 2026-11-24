@@ -346,6 +346,124 @@ describe("Okta plugin integration", () => {
     });
   });
 
+  describe.each([
+    {
+      server: "org",
+      oauthPath: "/oauth2/v1",
+      clientId: "org-client",
+      redirectUri: "http://localhost:3000/org-callback",
+    },
+    {
+      server: "default",
+      oauthPath: "/oauth2/default/v1",
+      clientId: "okta-test-client",
+      redirectUri: "http://localhost:3000/callback",
+    },
+  ])("$server OAuth user eligibility", ({ oauthPath, clientId, redirectUri }) => {
+    it.each(["STAGED", "PROVISIONED", "SUSPENDED", "DEPROVISIONED"] as const)(
+      "refuses %s users in the picker and direct callbacks",
+      async (status) => {
+        seedFromConfig(store, base, {
+          users: [{ okta_id: "00u_inactive", login: "inactive@example.com", status }],
+        });
+        const query = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri });
+        const page = await app.request(`${base}${oauthPath}/authorize?${query}`);
+        expect(page.status).toBe(200);
+        const html = await page.text();
+        expect(html).toContain("alice@example.com");
+
+        const callbackStatuses: number[] = [];
+        for (const responseMode of ["query", "form_post"]) {
+          const callback = await app.request(`${base}${oauthPath}/authorize/callback`, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+              user_ref: "00u_inactive",
+              client_id: clientId,
+              redirect_uri: redirectUri,
+              response_mode: responseMode,
+            }),
+          });
+          callbackStatuses.push(callback.status);
+        }
+        expect({ selectable: html.includes('value="00u_inactive"'), callbackStatuses }).toEqual({
+          selectable: false,
+          callbackStatuses: [400, 400],
+        });
+      },
+    );
+
+    it.each(["suspend", "deactivate"])("refuses a selection made before %s", async (action) => {
+      const user = getOktaStore(store).users.findOneBy("login", "alice@example.com")!;
+      const query = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri });
+      const page = await app.request(`${base}${oauthPath}/authorize?${query}`);
+      expect(await page.text()).toContain(`value="${user.okta_id}"`);
+
+      const changed = await app.request(`${base}/api/v1/users/${user.okta_id}/lifecycle/${action}`, {
+        method: "POST",
+        headers: managementHeaders(),
+      });
+      expect(changed.status).toBe(200);
+
+      const callback = await app.request(`${base}${oauthPath}/authorize/callback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          user_ref: user.okta_id,
+          client_id: clientId,
+          redirect_uri: redirectUri,
+        }),
+      });
+      expect(callback.status).toBe(400);
+      expect(callback.headers.get("location")).toBeNull();
+    });
+  });
+
+  describe("OAuth suspension recovery", () => {
+    it("allows a new sign-in after unsuspend", async () => {
+      const user = getOktaStore(store).users.findOneBy("login", "alice@example.com")!;
+      for (const action of ["suspend", "unsuspend"]) {
+        const response = await app.request(`${base}/api/v1/users/${user.okta_id}/lifecycle/${action}`, {
+          method: "POST",
+          headers: managementHeaders(),
+        });
+        expect(response.status).toBe(200);
+      }
+      const { code } = await getAuthCode(app, store, { userRef: user.okta_id });
+      expect((await exchangeCode(app, code)).status).toBe(200);
+    });
+
+    it("preserves grants issued before suspension", async () => {
+      const user = getOktaStore(store).users.findOneBy("login", "alice@example.com")!;
+      const { code } = await getAuthCode(app, store, { userRef: user.okta_id });
+      const issued = await exchangeCode(app, code);
+      const tokens = (await issued.json()) as { access_token: string; refresh_token: string };
+      const pending = await getAuthCode(app, store, { userRef: user.okta_id });
+
+      const suspended = await app.request(`${base}/api/v1/users/${user.okta_id}/lifecycle/suspend`, {
+        method: "POST",
+        headers: managementHeaders(),
+      });
+      expect(suspended.status).toBe(200);
+      expect((await exchangeCode(app, pending.code)).status).toBe(200);
+      const userinfo = await app.request(`${base}/oauth2/default/v1/userinfo`, {
+        headers: { Authorization: `Bearer ${tokens.access_token}` },
+      });
+      expect(userinfo.status).toBe(200);
+      const refreshed = await app.request(`${base}/oauth2/default/v1/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: tokens.refresh_token,
+          client_id: "okta-test-client",
+          client_secret: "okta-test-secret",
+        }),
+      });
+      expect(refreshed.status).toBe(200);
+    });
+  });
+
   describe("PKCE", () => {
     it("supports S256 code challenge", async () => {
       const verifier = "pkce-verifier-12345";

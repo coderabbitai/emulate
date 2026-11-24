@@ -4,6 +4,8 @@ Okta identity provider emulation with OAuth 2.0 / OIDC, user management, groups,
 
 ## OAuth / OIDC
 
+Only `ACTIVE` users can start a new OAuth sign-in. Other users are omitted from the picker. Callback submissions selecting a user who is not `ACTIVE` return HTTP `400` before a code is issued, including direct submissions and forms loaded before the status changed. This eligibility check does not revoke grants or tokens issued earlier.
+
 Default org server and custom authorization server paths (`/oauth2/:authServerId/...`):
 
 - `GET /.well-known/openid-configuration` — OIDC discovery (default)
