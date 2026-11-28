@@ -1,9 +1,9 @@
-const STRIPE_URL = `http://localhost:${process.env.PORT ?? "3000"}/emulate/stripe`;
+import { getAppOrigin } from "@/lib/stripe";
 
 async function handler(req: Request, ctx: { params: Promise<{ path: string[] }> }) {
   const { path } = await ctx.params;
   const url = new URL(req.url);
-  const target = `${STRIPE_URL}/v1/${path.join("/")}${url.search}`;
+  const target = `${getAppOrigin()}/emulate/stripe/v1/${path.join("/")}${url.search}`;
 
   const res = await fetch(target, {
     method: req.method,

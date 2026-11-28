@@ -1,6 +1,6 @@
 import type { RouteContext } from "@emulators/core";
 import { getStripeStore } from "../store.js";
-import { stripeId, parseStripeBody, stripeError, stripeList } from "../helpers.js";
+import { dispatchStripeEvent, stripeId, parseStripeBody, stripeError, stripeList } from "../helpers.js";
 import { formatCustomer } from "../formatters.js";
 
 export function customerRoutes({ app, store, webhooks }: RouteContext): void {
@@ -16,12 +16,7 @@ export function customerRoutes({ app, store, webhooks }: RouteContext): void {
       metadata: (body.metadata as Record<string, string>) ?? {},
     });
 
-    await webhooks.dispatch(
-      "customer.created",
-      undefined,
-      { type: "customer.created", data: { object: formatCustomer(customer) } },
-      "stripe",
-    );
+    await dispatchStripeEvent(webhooks, "customer.created", formatCustomer(customer));
 
     return c.json(formatCustomer(customer), 200);
   });
@@ -57,12 +52,7 @@ export function customerRoutes({ app, store, webhooks }: RouteContext): void {
       ...(body.metadata !== undefined && { metadata: body.metadata as Record<string, string> }),
     });
 
-    await webhooks.dispatch(
-      "customer.updated",
-      undefined,
-      { type: "customer.updated", data: { object: formatCustomer(updated!) } },
-      "stripe",
-    );
+    await dispatchStripeEvent(webhooks, "customer.updated", formatCustomer(updated!));
 
     return c.json(formatCustomer(updated!));
   });
@@ -91,12 +81,7 @@ export function customerRoutes({ app, store, webhooks }: RouteContext): void {
 
     ss.customers.delete(customer.id);
 
-    await webhooks.dispatch(
-      "customer.deleted",
-      undefined,
-      { type: "customer.deleted", data: { object: { ...formatCustomer(customer), deleted: true } } },
-      "stripe",
-    );
+    await dispatchStripeEvent(webhooks, "customer.deleted", { ...formatCustomer(customer), deleted: true });
 
     return c.json({ id: customer.stripe_id, object: "customer", deleted: true });
   });

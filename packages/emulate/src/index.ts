@@ -28,6 +28,13 @@ GitHub API coverage:
 Linear API coverage:
   Issue queries and mutations include numeric priority and derived priorityLabel fields.
 
+Stripe API coverage:
+  Hosted Checkout with approval and decline test cards.
+  Idempotent POST /v1/checkout/sessions requests.
+  Checkout Sessions include the total and currency for priced items.
+  Failed webhook deliveries retry after 1, 2, and 4 seconds with the original event ID.
+  Point the Stripe SDK at the Stripe service host, port, and protocol.
+
 Chargebee API coverage:
   Subscription lifecycle, invoicing and the time machine, which advances the clock and runs
   every renewal it makes due. Proration, tax, dunning and estimates return 501 not_emulated

@@ -1,7 +1,5 @@
 import { randomBytes } from "crypto";
-import type { Context } from "@emulators/core";
-import type { ContentfulStatusCode } from "@emulators/core";
-import type { Entity, Collection } from "@emulators/core";
+import type { Context, ContentfulStatusCode, Entity, WebhookDispatcher } from "@emulators/core";
 
 const NUMERIC_KEYS = new Set([
   "amount",
@@ -19,6 +17,30 @@ export function stripeId(prefix: string): string {
 
 export function toUnixTimestamp(iso: string): number {
   return Math.floor(new Date(iso).getTime() / 1000);
+}
+
+const STRIPE_WEBHOOK_RETRY_DELAYS_MS = [1000, 2000, 4000];
+
+export function dispatchStripeEvent(
+  webhooks: WebhookDispatcher,
+  type: string,
+  object: Record<string, unknown>,
+): Promise<void> {
+  return webhooks.dispatch(
+    type,
+    undefined,
+    {
+      id: `evt_${randomBytes(16).toString("hex")}`,
+      object: "event",
+      created: Math.floor(Date.now() / 1000),
+      livemode: false,
+      type,
+      data: { object },
+    },
+    "stripe",
+    undefined,
+    STRIPE_WEBHOOK_RETRY_DELAYS_MS,
+  );
 }
 
 /**
@@ -45,34 +67,42 @@ export async function parseStripeBody(c: Context): Promise<Record<string, unknow
   const result: Record<string, unknown> = {};
 
   for (const [key, value] of params) {
-    if (key.includes("[")) {
-      const parts = key.replace(/]/g, "").split("[");
-      let target: Record<string, unknown> | unknown[] = result;
-      for (let i = 0; i < parts.length - 1; i++) {
-        const part = parts[i];
-        const nextIsIndex = /^\d+$/.test(parts[i + 1]);
-        const current = (target as Record<string, unknown>)[part];
-        if (current === undefined || current === null || typeof current !== "object") {
-          (target as Record<string, unknown>)[part] = nextIsIndex ? [] : {};
-        }
-        target = (target as Record<string, unknown>)[part] as Record<string, unknown> | unknown[];
-      }
-      const lastKey = parts[parts.length - 1];
-      const num = Number(value);
-      const coerced = NUMERIC_KEYS.has(lastKey) && Number.isFinite(num) ? num : value;
-      if (Array.isArray(target)) {
-        const idx = lastKey === "" ? target.length : parseInt(lastKey, 10);
-        target[idx] = coerced;
-      } else {
-        (target as Record<string, unknown>)[lastKey] = coerced;
-      }
-    } else {
-      const num = Number(value);
-      result[key] = NUMERIC_KEYS.has(key) && Number.isFinite(num) ? num : value;
-    }
+    const parts = key.includes("[") ? key.replace(/]/g, "").split("[") : [key];
+    const lastKey = parts[parts.length - 1];
+    const num = Number(value);
+    setStripeFormValue(result, parts, NUMERIC_KEYS.has(lastKey) && Number.isFinite(num) ? num : value);
   }
 
   return result;
+}
+
+function isFormArrayIndex(key: string): boolean {
+  return /^(0|[1-9]\d*)$/.test(key) && Number(key) < 2 ** 32 - 1;
+}
+
+function setStripeFormValue(target: Record<string, unknown>, parts: string[], value: string | number): void {
+  for (let i = 0; i < parts.length; i++) {
+    const last = i === parts.length - 1;
+    let field = parts[i];
+    if (Array.isArray(target)) {
+      if (last && field === "") field = String(target.length);
+      if (!isFormArrayIndex(field)) return;
+    }
+
+    if (last) {
+      Object.defineProperty(target, field, { value, writable: true, enumerable: true, configurable: true });
+      return;
+    }
+
+    let child = Object.hasOwn(target, field) ? target[field] : undefined;
+    if (child === null || typeof child !== "object") {
+      const next = parts[i + 1];
+      const appendsValue = next === "" && i === parts.length - 2;
+      child = appendsValue || isFormArrayIndex(next) ? [] : {};
+      Object.defineProperty(target, field, { value: child, writable: true, enumerable: true, configurable: true });
+    }
+    target = child as Record<string, unknown>;
+  }
 }
 
 /**
@@ -82,7 +112,7 @@ export async function parseStripeBody(c: Context): Promise<Record<string, unknow
 export function stripeError(
   c: Context,
   status: number,
-  type: "invalid_request_error" | "card_error" | "api_error",
+  type: "invalid_request_error" | "card_error" | "api_error" | "idempotency_error",
   message: string,
   code?: string,
   param?: string,

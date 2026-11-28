@@ -1,5 +1,6 @@
 import { createEmulateHandler } from "@emulators/adapter-next";
 import * as stripe from "@emulators/stripe";
+import { getAppOrigin, getStripeWebhookSecret } from "@/lib/stripe";
 
 export const { GET, POST, PUT, PATCH, DELETE } = createEmulateHandler({
   services: {
@@ -20,8 +21,9 @@ export const { GET, POST, PUT, PATCH, DELETE } = createEmulateHandler({
         ],
         webhooks: [
           {
-            url: `http://localhost:${process.env.PORT ?? "3000"}/api/webhooks/stripe`,
-            events: ["*"],
+            url: `${getAppOrigin()}/api/webhooks/stripe`,
+            events: ["checkout.session.completed"],
+            secret: getStripeWebhookSecret(),
           },
         ],
       },

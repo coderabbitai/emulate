@@ -1,6 +1,14 @@
 import type { RouteContext } from "@emulators/core";
 import { getStripeStore } from "../store.js";
-import { stripeId, parseStripeBody, stripeError, stripeList, applyExpand, parseExpand } from "../helpers.js";
+import {
+  dispatchStripeEvent,
+  stripeId,
+  parseStripeBody,
+  stripeError,
+  stripeList,
+  applyExpand,
+  parseExpand,
+} from "../helpers.js";
 import { formatCustomer, formatPaymentIntent } from "../formatters.js";
 import type { StripePaymentIntent, PaymentIntentStatus } from "../entities.js";
 
@@ -51,12 +59,7 @@ export function paymentIntentRoutes({ app, store, webhooks }: RouteContext): voi
       metadata: (body.metadata as Record<string, string>) ?? {},
     });
 
-    await webhooks.dispatch(
-      "payment_intent.created",
-      undefined,
-      { type: "payment_intent.created", data: { object: formatPaymentIntent(pi) } },
-      "stripe",
-    );
+    await dispatchStripeEvent(webhooks, "payment_intent.created", formatPaymentIntent(pi));
 
     return c.json(formatPaymentIntent(pi), 200);
   });
@@ -143,30 +146,15 @@ export function paymentIntentRoutes({ app, store, webhooks }: RouteContext): voi
       metadata: updated.metadata,
     });
 
-    await webhooks.dispatch(
-      "payment_intent.succeeded",
-      undefined,
-      { type: "payment_intent.succeeded", data: { object: formatPaymentIntent(updated) } },
-      "stripe",
-    );
+    await dispatchStripeEvent(webhooks, "payment_intent.succeeded", formatPaymentIntent(updated));
 
-    await webhooks.dispatch(
-      "charge.succeeded",
-      undefined,
-      {
-        type: "charge.succeeded",
-        data: {
-          object: {
-            id: charge.stripe_id,
-            object: "charge",
-            amount: charge.amount,
-            currency: charge.currency,
-            status: charge.status,
-          },
-        },
-      },
-      "stripe",
-    );
+    await dispatchStripeEvent(webhooks, "charge.succeeded", {
+      id: charge.stripe_id,
+      object: "charge",
+      amount: charge.amount,
+      currency: charge.currency,
+      status: charge.status,
+    });
 
     return c.json(formatPaymentIntent(updated));
   });
@@ -194,12 +182,7 @@ export function paymentIntentRoutes({ app, store, webhooks }: RouteContext): voi
 
     const updated = ss.paymentIntents.update(pi.id, { status: "canceled" })!;
 
-    await webhooks.dispatch(
-      "payment_intent.canceled",
-      undefined,
-      { type: "payment_intent.canceled", data: { object: formatPaymentIntent(updated) } },
-      "stripe",
-    );
+    await dispatchStripeEvent(webhooks, "payment_intent.canceled", formatPaymentIntent(updated));
 
     return c.json(formatPaymentIntent(updated));
   });

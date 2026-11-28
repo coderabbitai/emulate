@@ -24,8 +24,3 @@ export async function getCart(): Promise<CartItem[]> {
     }
   }
 }
-
-export async function clearCart(): Promise<void> {
-  const cookieStore = await cookies();
-  cookieStore.delete(COOKIE_NAME);
-}

@@ -97,9 +97,11 @@ export async function createEmulator(options: EmulatorOptions): Promise<Emulator
         if (user.installation) tokenMap.delete(token);
       }
       store.reset();
+      if (service === "stripe") webhooks.clear();
       seed();
     },
     close(): Promise<void> {
+      if (service === "stripe") webhooks.clear();
       return new Promise((resolve, reject) => {
         httpServer.close((err) => {
           if (err) reject(err);

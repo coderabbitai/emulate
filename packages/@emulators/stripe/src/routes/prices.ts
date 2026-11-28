@@ -1,6 +1,7 @@
 import type { RouteContext } from "@emulators/core";
 import { getStripeStore } from "../store.js";
 import {
+  dispatchStripeEvent,
   stripeId,
   toUnixTimestamp,
   parseStripeBody,
@@ -79,12 +80,7 @@ export function priceRoutes({ app, store, webhooks }: RouteContext): void {
       metadata: (body.metadata as Record<string, string>) ?? {},
     });
 
-    await webhooks.dispatch(
-      "price.created",
-      undefined,
-      { type: "price.created", data: { object: formatPrice(price) } },
-      "stripe",
-    );
+    await dispatchStripeEvent(webhooks, "price.created", formatPrice(price));
 
     return c.json(formatPrice(price), 200);
   });
