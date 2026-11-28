@@ -679,6 +679,68 @@ describe("Stripe plugin", () => {
       expect(sessions[0].line_items).toEqual([{ price: "price_test", quantity: 2 }]);
     });
 
+    it("preserves all append-style form array values when comparing retries", async () => {
+      const { app, store } = createTestApp();
+      const postForm = (body: URLSearchParams) =>
+        app.request(`${base}/v1/checkout/sessions`, {
+          method: "POST",
+          headers: { ...auth(), "Content-Type": "application/x-www-form-urlencoded", "Idempotency-Key": "form-array" },
+          body,
+        });
+      const fields = new URLSearchParams([
+        ["mode", "payment"],
+        ["expand[]", "customer"],
+        ["expand[]", "payment_intent"],
+      ]);
+      const first = await postForm(fields);
+      expect(first.status).toBe(200);
+      const original = await first.text();
+
+      const retry = await postForm(fields);
+      expect(retry.status).toBe(200);
+      expect(await retry.text()).toBe(original);
+
+      fields.delete("expand[]", "customer");
+      const mismatch = await postForm(fields);
+      expect(mismatch.status).toBe(400);
+      expect(await mismatch.json()).toMatchObject({ error: { type: "idempotency_error" } });
+      expect(getStripeStore(store).checkoutSessions.count()).toBe(1);
+    });
+
+    it("rejects mixed currencies and lets a corrected Checkout request reuse the key", async () => {
+      const { app, store } = createTestApp();
+      seedFromConfig(store, base, {
+        products: [{ name: "Widget" }],
+        prices: [
+          { id: "price_usd", product_name: "Widget", currency: "usd", unit_amount: 500 },
+          { id: "price_eur", product_name: "Widget", currency: "eur", unit_amount: 600 },
+          { id: "price_usd_alt", product_name: "Widget", currency: "USD", unit_amount: 700 },
+        ],
+      });
+      const key = "line-item-currency";
+      const usdItem = { price: "price_usd", quantity: 2 };
+      const invalid = await createCheckout(
+        app,
+        { mode: "payment", line_items: [usdItem, { price: "price_eur", quantity: 1 }] },
+        key,
+      );
+      expect(invalid.status).toBe(400);
+      expect(await invalid.json()).toMatchObject({
+        error: { type: "invalid_request_error", param: "line_items[1][price]" },
+      });
+      expect(getStripeStore(store).checkoutSessions.count()).toBe(0);
+
+      const params = { mode: "payment", line_items: [usdItem, { price: "price_usd_alt", quantity: 1 }] };
+      const corrected = await createCheckout(app, params, key);
+      expect(corrected.status).toBe(200);
+      const original = await corrected.text();
+      expect(JSON.parse(original)).toMatchObject({ amount_total: 1700, currency: "usd" });
+      const retry = await createCheckout(app, params, key);
+      expect(retry.status).toBe(200);
+      expect(await retry.text()).toBe(original);
+      expect(getStripeStore(store).checkoutSessions.count()).toBe(1);
+    });
+
     it.each([
       [{}, "mode"],
       [{ mode: "payment", customer: "cus_missing" }, "customer"],

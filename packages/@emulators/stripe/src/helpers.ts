@@ -96,7 +96,9 @@ function setStripeFormValue(target: Record<string, unknown>, parts: string[], va
 
     let child = Object.hasOwn(target, field) ? target[field] : undefined;
     if (child === null || typeof child !== "object") {
-      child = isFormArrayIndex(parts[i + 1]) ? [] : {};
+      const next = parts[i + 1];
+      const appendsValue = next === "" && i === parts.length - 2;
+      child = appendsValue || isFormArrayIndex(next) ? [] : {};
       Object.defineProperty(target, field, { value: child, writable: true, enumerable: true, configurable: true });
     }
     target = child as Record<string, unknown>;

@@ -131,6 +131,7 @@ export function checkoutSessionRoutes({ app, store, webhooks, baseUrl }: RouteCo
     }
 
     const lineItems: Array<{ price: string; quantity: number }> = [];
+    let currency: string | undefined;
     if (body.line_items != null) {
       if (!Array.isArray(body.line_items)) {
         return stripeError(c, 400, "invalid_request_error", "line_items must be an array.", undefined, "line_items");
@@ -158,7 +159,8 @@ export function checkoutSessionRoutes({ app, store, webhooks, baseUrl }: RouteCo
             `line_items[${i}][price]`,
           );
         }
-        if (!ss.prices.findOneBy("stripe_id", li.price)) {
+        const price = ss.prices.findOneBy("stripe_id", li.price);
+        if (!price) {
           return stripeError(
             c,
             400,
@@ -179,6 +181,17 @@ export function checkoutSessionRoutes({ app, store, webhooks, baseUrl }: RouteCo
             `line_items[${i}][quantity]`,
           );
         }
+        if (currency !== undefined && price.currency !== currency) {
+          return stripeError(
+            c,
+            400,
+            "invalid_request_error",
+            "All Checkout line items must use the same currency.",
+            undefined,
+            `line_items[${i}][price]`,
+          );
+        }
+        currency ??= price.currency;
         lineItems.push({ price: li.price, quantity: qty });
       }
     }
