@@ -102,7 +102,8 @@ export function seedFromConfig(store: Store, baseUrl: string, config: ClerkSeedC
           : undefined;
       if (!browserEnabled && existingEmail) continue;
 
-      const clerkId = userCfg.clerk_id ?? defaultUser?.clerk_id ?? generateClerkId("user_");
+      const primaryOwnerId = browserEnabled && existingEmail?.is_primary ? existingEmail.user_id : undefined;
+      const clerkId = userCfg.clerk_id ?? defaultUser?.clerk_id ?? primaryOwnerId ?? generateClerkId("user_");
       const existingUser = browserEnabled ? cs.users.findOneBy("clerk_id", clerkId) : undefined;
       const existingPrimaryOwner = existingUser && existingEmail?.user_id === clerkId;
       const allowedOwnerId = defaultUser?.clerk_id ?? (existingPrimaryOwner ? clerkId : undefined);

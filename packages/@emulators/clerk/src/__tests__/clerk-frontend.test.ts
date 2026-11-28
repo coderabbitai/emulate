@@ -313,6 +313,27 @@ describe("Clerk browser sessions", () => {
 });
 
 describe("Clerk password and test credentials", () => {
+  it("replays an ID-less browser seed by its primary email and still validates its aliases", () => {
+    const { store } = setup();
+    const { users, emailAddresses } = getClerkStore(store);
+    const primary = "implicit@example.test";
+    const alias = "implicit-alias@example.test";
+    const config = { browser_app_origin: origin, users: [{ email_addresses: [primary, alias], password }] };
+
+    seedFromConfig(store, issuer, config);
+    const owner = emailAddresses.findOneBy("email_address", primary)!.user_id;
+    const userCount = users.all().length;
+    seedFromConfig(store, issuer, config);
+    expect(users.all()).toHaveLength(userCount);
+    expect(emailAddresses.findBy("user_id", owner).map((email) => email.email_address)).toEqual([primary, alias]);
+
+    for (const addresses of [[primary, "a@example.test"], [alias]]) {
+      expect(() =>
+        seedFromConfig(store, issuer, { ...config, users: [{ email_addresses: addresses, password }] }),
+      ).toThrow("Clerk browser seed email address is already owned by another user.");
+    }
+  });
+
   it.each(["test@example.com", "a@example.test"])(
     "rejects a browser seed alias already owned by another user (%s)",
     (email) => {
