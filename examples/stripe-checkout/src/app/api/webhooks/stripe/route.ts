@@ -24,10 +24,10 @@ export async function POST(request: Request) {
       recordOrder({
         sessionId: session.id,
         eventId: event.id,
-        customerId: typeof session.customer === "string" ? session.customer : session.customer?.id ?? null,
+        customerId: typeof session.customer === "string" ? session.customer : (session.customer?.id ?? null),
         paymentStatus: session.payment_status,
         paymentIntentId:
-          typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id ?? null,
+          typeof session.payment_intent === "string" ? session.payment_intent : (session.payment_intent?.id ?? null),
         amountTotal: session.amount_total ?? null,
         currency: session.currency ?? null,
         completedAt: new Date().toISOString(),

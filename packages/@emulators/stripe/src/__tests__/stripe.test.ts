@@ -537,7 +537,10 @@ describe("Stripe plugin", () => {
       const created = await createCheckout(app, {
         mode: "payment",
         success_url: successUrl,
-        line_items: [{ price: "price_widget", quantity: 3 }, { price: "price_case", quantity: 1 }],
+        line_items: [
+          { price: "price_widget", quantity: 3 },
+          { price: "price_case", quantity: 1 },
+        ],
       });
       expect(created.status).toBe(200);
       const session = (await created.json()) as { id: string };
