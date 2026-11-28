@@ -2,11 +2,12 @@ export const dynamic = "force-dynamic";
 
 import Image from "next/image";
 import Link from "next/link";
-import { stripe } from "@/lib/stripe";
+import { getStripe } from "@/lib/stripe";
 import { productImages, formatCurrency } from "@/lib/products";
 import { AddToCartClient } from "@/components/add-to-cart-client";
 
 export default async function CatalogPage() {
+  const stripe = getStripe();
   const [products, prices] = await Promise.all([
     stripe.products.list({ active: true }),
     stripe.prices.list({ active: true }),

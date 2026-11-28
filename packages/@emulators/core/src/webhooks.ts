@@ -52,6 +52,7 @@ function githubHeaders({ event, body, subscription, deliveryId }: WebhookHeaderC
 export class WebhookDispatcher {
   private subscriptions: WebhookSubscription[] = [];
   private deliveries: WebhookDelivery[] = [];
+  private retryTimers = new Set<ReturnType<typeof setTimeout>>();
   private subscriptionIdCounter = 1;
   private deliveryIdCounter = 1;
   private headerFactory: WebhookHeaderFactory = githubHeaders;
@@ -106,6 +107,7 @@ export class WebhookDispatcher {
     payload: unknown,
     owner: string,
     repo?: string,
+    retryDelaysMs: readonly number[] = [],
   ): Promise<void> {
     const matchingSubs = this.subscriptions.filter((s) => {
       if (!s.active) return false;
@@ -118,42 +120,56 @@ export class WebhookDispatcher {
       return event === "ping" || s.events.includes("*") || s.events.includes(event);
     });
 
+    if (matchingSubs.length === 0) return;
+    const body = JSON.stringify(payload);
     for (const sub of matchingSubs) {
-      const delivery: WebhookDelivery = {
-        id: this.deliveryIdCounter++,
-        hook_id: sub.id,
-        event,
-        action,
-        payload,
-        status_code: null,
-        delivered_at: new Date().toISOString(),
-        duration: null,
-        success: false,
+      const attempt = async (attemptIndex: number): Promise<void> => {
+        if (retryDelaysMs.length > 0 && (!sub.active || !this.subscriptions.includes(sub))) return;
+        const delivery: WebhookDelivery = {
+          id: this.deliveryIdCounter++,
+          hook_id: sub.id,
+          event,
+          action,
+          payload,
+          status_code: null,
+          delivered_at: new Date().toISOString(),
+          duration: null,
+          success: false,
+        };
+        try {
+          const headers = this.headerFactory({ event, action, body, subscription: sub, deliveryId: delivery.id });
+          const start = Date.now();
+          const response = await fetch(sub.url, {
+            method: "POST",
+            headers,
+            body,
+            ...(retryDelaysMs.length > 0 ? { redirect: "manual" as const } : {}),
+            signal: AbortSignal.timeout(10000),
+          });
+          delivery.duration = Date.now() - start;
+          delivery.status_code = response.status;
+          delivery.success = response.ok;
+        } catch {
+          delivery.duration = 0;
+        }
+
+        if (retryDelaysMs.length > 0 && !this.subscriptions.includes(sub)) return;
+        this.deliveries.push(delivery);
+        if (this.deliveries.length > MAX_DELIVERIES) {
+          this.deliveries.splice(0, this.deliveries.length - MAX_DELIVERIES);
+        }
+
+        const delay = retryDelaysMs[attemptIndex];
+        if (!delivery.success && delay !== undefined) {
+          const timer = setTimeout(() => {
+            this.retryTimers.delete(timer);
+            void attempt(attemptIndex + 1);
+          }, delay);
+          this.retryTimers.add(timer);
+          timer.unref();
+        }
       };
-
-      const body = JSON.stringify(payload);
-
-      try {
-        const headers = this.headerFactory({ event, action, body, subscription: sub, deliveryId: delivery.id });
-        const start = Date.now();
-        const response = await fetch(sub.url, {
-          method: "POST",
-          headers,
-          body,
-          signal: AbortSignal.timeout(10000),
-        });
-        delivery.duration = Date.now() - start;
-        delivery.status_code = response.status;
-        delivery.success = response.ok;
-      } catch {
-        delivery.duration = 0;
-        delivery.success = false;
-      }
-
-      this.deliveries.push(delivery);
-      if (this.deliveries.length > MAX_DELIVERIES) {
-        this.deliveries.splice(0, this.deliveries.length - MAX_DELIVERIES);
-      }
+      await attempt(0);
     }
   }
 
@@ -165,6 +181,8 @@ export class WebhookDispatcher {
   }
 
   clear(): void {
+    for (const timer of this.retryTimers) clearTimeout(timer);
+    this.retryTimers.clear();
     this.subscriptions.length = 0;
     this.deliveries.length = 0;
     this.subscriptionIdCounter = 1;

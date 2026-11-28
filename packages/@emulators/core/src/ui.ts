@@ -257,6 +257,7 @@ body{
   font-size:.6875rem;color:#1a8c00;margin-top:10px;text-align:center;
   font-style:italic;
 }
+.checkout-payment-error{font-size:.8125rem;color:#ff9c9c;margin:10px 0 0;}
 .checkout-pay-btn{
   width:100%;padding:14px;border:none;border-radius:8px;
   background:#33ff00;color:#000;font:inherit;font-size:.9375rem;font-weight:700;
@@ -416,6 +417,9 @@ export interface CheckoutPageOptions {
   currency: string;
   sessionId: string;
   cancelUrl?: string | null;
+  testCards?: readonly { value: string; label: string }[];
+  selectedTestCard?: string;
+  paymentError?: string;
 }
 
 export function renderCheckoutPage(opts: CheckoutPageOptions, service?: string): string {
@@ -458,6 +462,24 @@ export function renderCheckoutPage(opts: CheckoutPageOptions, service?: string):
     : "";
 
   const merchant = opts.merchantName ? escapeHtml(opts.merchantName) : "Checkout";
+  const paymentError = opts.paymentError
+    ? `<p class="checkout-payment-error" role="alert">${escapeHtml(opts.paymentError)}</p>`
+    : "";
+  const cardFields = opts.testCards
+    ? `<label class="checkout-form-label" for="checkout-test-card">Test card</label>
+        <select id="checkout-test-card" name="test_card" class="checkout-input">
+          ${opts.testCards.map(({ value, label }) => `<option value="${escapeAttr(value)}"${value === opts.selectedTestCard ? " selected" : ""}>${escapeHtml(label)}</option>`).join("")}
+        </select>
+        <div class="checkout-sim-note">Choose a simulated card to test your checkout.</div>`
+    : `<label class="checkout-form-label">Card information</label>
+        <div class="checkout-card-box">
+          <input type="text" class="checkout-input" placeholder="1234 1234 1234 1234" disabled/>
+          <div class="checkout-card-row">
+            <input type="text" class="checkout-input" placeholder="MM / YY" disabled/>
+            <input type="text" class="checkout-input" placeholder="CVC" disabled/>
+          </div>
+        </div>
+        <div class="checkout-sim-note">Card fields are simulated. Payment will be auto-approved.</div>`;
 
   return `${head("Checkout")}
 <body>
@@ -479,15 +501,8 @@ ${emuBar(service)}
         <input type="email" name="email" class="checkout-input" placeholder="you@example.com"/>
       </div>
       <div class="checkout-form-section">
-        <label class="checkout-form-label">Card information</label>
-        <div class="checkout-card-box">
-          <input type="text" class="checkout-input" placeholder="1234 1234 1234 1234" disabled/>
-          <div class="checkout-card-row">
-            <input type="text" class="checkout-input" placeholder="MM / YY" disabled/>
-            <input type="text" class="checkout-input" placeholder="CVC" disabled/>
-          </div>
-        </div>
-        <div class="checkout-sim-note">Card fields are simulated. Payment will be auto-approved.</div>
+        ${cardFields}
+        ${paymentError}
       </div>
       <button type="submit" class="checkout-pay-btn">Pay ${fmtShort(opts.total)}</button>
     </form>

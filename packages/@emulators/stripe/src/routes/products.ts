@@ -1,6 +1,13 @@
 import type { RouteContext } from "@emulators/core";
 import { getStripeStore } from "../store.js";
-import { stripeId, toUnixTimestamp, parseStripeBody, stripeError, stripeList } from "../helpers.js";
+import {
+  dispatchStripeEvent,
+  stripeId,
+  toUnixTimestamp,
+  parseStripeBody,
+  stripeError,
+  stripeList,
+} from "../helpers.js";
 import type { StripeProduct } from "../entities.js";
 
 function formatProduct(p: StripeProduct) {
@@ -31,12 +38,7 @@ export function productRoutes({ app, store, webhooks }: RouteContext): void {
       metadata: (body.metadata as Record<string, string>) ?? {},
     });
 
-    await webhooks.dispatch(
-      "product.created",
-      undefined,
-      { type: "product.created", data: { object: formatProduct(product) } },
-      "stripe",
-    );
+    await dispatchStripeEvent(webhooks, "product.created", formatProduct(product));
 
     return c.json(formatProduct(product), 200);
   });

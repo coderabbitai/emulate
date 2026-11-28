@@ -27,6 +27,10 @@ All services start with sensible defaults. No config file needed:
 - **Chargebee** on `http://localhost:4014`
 
 Stripe webhooks configured with a secret include a `Stripe-Signature` header signed over the timestamp and raw request body.
+Failed Stripe webhook deliveries retry after 1, 2, and 4 seconds in the running emulator. Each attempt uses the original event ID and body with a new signing timestamp.
+Stripe Checkout Session creation supports `Idempotency-Key`. The [Stripe Checkout example](examples/stripe-checkout) uses the Stripe SDK for local checkout and verifies the webhook before recording the order. The hosted page offers approval and decline test cards.
+Stripe Checkout Sessions with priced items report the hosted total and currency in SDK responses and webhook events.
+
 Chargebee webhook secrets become HTTP basic credentials instead, because Chargebee sends no signature header.
 
 ## CLI

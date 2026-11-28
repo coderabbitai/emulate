@@ -1,8 +1,8 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { stripe } from "@/lib/stripe";
-import { getCart, clearCart } from "@/lib/cart";
+import { getAppOrigin, getStripe } from "@/lib/stripe";
+import { getCart } from "@/lib/cart";
 
 export async function createCheckoutSession(): Promise<void> {
   const items = await getCart();
@@ -10,8 +10,8 @@ export async function createCheckoutSession(): Promise<void> {
     redirect("/cart");
   }
 
-  const port = process.env.PORT ?? "3000";
-  const origin = `http://localhost:${port}`;
+  const origin = getAppOrigin();
+  const stripe = getStripe();
 
   const customer = await stripe.customers.create({
     email: "shopper@example.com",
@@ -31,8 +31,7 @@ export async function createCheckoutSession(): Promise<void> {
       cancel_url: `${origin}/cart`,
     });
   } catch {
-    await clearCart();
-    redirect("/");
+    redirect("/cart");
   }
 
   if (!session.url) {

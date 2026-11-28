@@ -1,48 +1,39 @@
-import { NextResponse } from "next/server";
-import { recordOrder, updateOrder, findOrderByCustomer } from "@/lib/orders";
+import type Stripe from "stripe";
+import { recordOrder } from "@/lib/orders";
+import { getStripe, getStripeWebhookSecret } from "@/lib/stripe";
+
+export const runtime = "nodejs";
 
 export async function POST(request: Request) {
-  const body = await request.json();
-  const event = body.type as string;
-  const obj = body.data?.object;
+  const signature = request.headers.get("stripe-signature");
+  if (!signature) {
+    return Response.json({ error: "Missing Stripe-Signature header" }, { status: 400 });
+  }
 
-  switch (event) {
-    case "customer.created": {
-      const order = findOrderByCustomer(obj.id);
-      if (order) {
-        updateOrder(order.sessionId, { customerEmail: obj.email ?? null });
-      }
-      break;
-    }
+  const rawBody = Buffer.from(await request.arrayBuffer());
+  let event: Stripe.Event;
+  try {
+    event = getStripe().webhooks.constructEvent(rawBody, signature, getStripeWebhookSecret());
+  } catch {
+    return Response.json({ error: "Invalid Stripe webhook" }, { status: 400 });
+  }
 
-    case "checkout.session.completed": {
+  if (event.type === "checkout.session.completed") {
+    const session = event.data.object;
+    if (session.payment_status === "paid") {
       recordOrder({
-        sessionId: obj.id,
-        customerId: obj.customer ?? null,
-        customerEmail: null,
-        paymentStatus: obj.payment_status,
-        paymentIntentId: null,
-        chargeId: null,
+        sessionId: session.id,
+        eventId: event.id,
+        customerId: typeof session.customer === "string" ? session.customer : session.customer?.id ?? null,
+        paymentStatus: session.payment_status,
+        paymentIntentId:
+          typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id ?? null,
+        amountTotal: session.amount_total ?? null,
+        currency: session.currency ?? null,
         completedAt: new Date().toISOString(),
       });
-      break;
-    }
-
-    case "payment_intent.succeeded": {
-      const customerId = obj.customer as string | null;
-      if (customerId) {
-        const order = findOrderByCustomer(customerId);
-        if (order) {
-          updateOrder(order.sessionId, { paymentIntentId: obj.id });
-        }
-      }
-      break;
-    }
-
-    case "charge.succeeded": {
-      break;
     }
   }
 
-  return NextResponse.json({ received: true });
+  return Response.json({ received: true });
 }

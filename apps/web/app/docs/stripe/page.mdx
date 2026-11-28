@@ -53,6 +53,14 @@ Stripe API emulation with customers, payment methods, customer sessions, payment
 - `GET /checkout/:id` — hosted checkout page (HTML)
 - `POST /checkout/:id/complete` — complete payment flow
 
+Point the Stripe Node SDK at the emulator with `host`, `port`, and `protocol`. Use `localhost`, the Stripe service port, and `http` for the local CLI. Set the success and cancel URLs to your app's origin.
+
+On the hosted page, choose the test card ending in 0002 to decline the payment. The same session stays open and unpaid. Choose the card ending in 4242 to complete it. A declined attempt sends no completion webhook.
+
+Checkout Sessions with priced items include `amount_total` and `currency` in SDK responses and webhook events. The Checkout example shows the total and currency recorded from the verified paid event.
+
+Sending the same `Idempotency-Key` with the same parameters to `POST /v1/checkout/sessions` returns the original response for the life of the emulator store. Reusing that key with different parameters returns HTTP 400 with `idempotency_error`.
+
 ## Webhooks
 
 Events are delivered to configured webhook URLs:
@@ -60,3 +68,7 @@ Events are delivered to configured webhook URLs:
 - Webhooks configured with a secret include `Stripe-Signature: t=<timestamp>,v1=<signature>`, signed over `<timestamp>.<raw body>`
 - `checkout.session.completed` — when a checkout session is completed
 - `checkout.session.expired` — when a checkout session expires
+
+Failed Stripe webhook deliveries retry after 1, 2, and 4 seconds in the running emulator. Each attempt uses the original event ID and body with a new signing timestamp. Delivery stops on HTTP 2xx or after the final retry.
+
+Configure a fresh synthetic signing secret in the seed and use the same value on the app server. Pass the untouched request body, the `Stripe-Signature` header, and the secret to `stripe.webhooks.constructEvent` before using the event. Each event has an `evt_` ID that is shared across deliveries of that event. Record fulfilment once per paid Checkout Session ID and read the recorded order on the success page.
