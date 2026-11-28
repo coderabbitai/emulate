@@ -22,14 +22,20 @@ import {
   users,
 } from "./fixture.mjs";
 
-const [cliBin, mode] = process.argv.slice(2);
-if (!cliBin || ![undefined, "--baseline"].includes(mode)) {
-  throw new Error("Usage: node clerk-browser.playwright.mjs <scratch consumer node_modules/.bin/emulate> [--baseline]");
+const [cliPath, mode] = process.argv.slice(2);
+if (!cliPath || ![undefined, "--baseline", "--guide-smoke"].includes(mode)) {
+  throw new Error(
+    "Usage: node clerk-browser.playwright.mjs <installed node_modules/.bin/emulate> [--baseline] or <installed dist/index.js> --guide-smoke",
+  );
 }
-const cli = await realpath(cliBin);
-const consumer = await realpath(resolve(dirname(cliBin), "../.."));
-const installedCli = await realpath(resolve(dirname(cliBin), "../emulate/dist/index.js"));
-assert.ok(installedCli.startsWith(`${consumer}/node_modules/`), "Pass the executable from an installed CLI package");
+const guideSmoke = mode === "--guide-smoke";
+const cli = guideSmoke ? process.execPath : await realpath(cliPath);
+const installedCli = await realpath(guideSmoke ? cliPath : resolve(dirname(cliPath), "../emulate/dist/index.js"));
+const cliArgs = guideSmoke ? [installedCli] : [];
+if (!guideSmoke) {
+  const consumer = await realpath(resolve(dirname(cliPath), "../.."));
+  assert.ok(installedCli.startsWith(`${consumer}/node_modules/`), "Pass the executable from an installed CLI package");
+}
 process.env.CLERK_TELEMETRY_DISABLED = "1";
 const fixture = dirname(fileURLToPath(import.meta.url));
 const scratch = await mkdtemp(join(tmpdir(), "clerk-browser-run-"));
@@ -134,19 +140,36 @@ function appRequest(path, options = {}) {
   });
 }
 
-async function startEmulator() {
-  emulator = startChild(cli, [
-    "start",
-    "--service",
-    "clerk",
-    "--port",
-    String(clerkPort),
-    "--base-url",
-    issuer,
-    "--seed",
-    seed,
-  ]);
+async function startEmulator(
+  args = ["start", "--service", "clerk", "--port", String(clerkPort), "--base-url", issuer, "--seed", seed],
+) {
+  emulator = startChild(cli, [...cliArgs, ...args]);
   await waitForHttp(() => fetch(`${issuer}/v1/jwks`, { redirect: "error" }), emulator);
+}
+
+async function readBrowserGuide() {
+  const path = join(dirname(installedCli), "../skills/clerk/SKILL.md");
+  const guide = await readFile(path, "utf8");
+  const section = guide.split(/^### Browser seed$/m)[1];
+  const blocks = section?.match(/```json\n([\s\S]*?)\n```\n\n```bash\n([\s\S]*?)\n```/);
+  assert.ok(blocks, "Expected the installed guide's browser seed and launch command");
+  const [, seedJson, launch] = blocks;
+  const config = JSON.parse(seedJson);
+  config.clerk.browser_app_origin = appOrigin;
+
+  const [npx, offline, emulate, ...args] = launch.replaceAll("\\\n", " ").trim().split(/\s+/);
+  assert.deepEqual([npx, offline, emulate], ["npx", "--no-install", "emulate"]);
+  for (const [option, value] of [
+    ["--port", String(clerkPort)],
+    ["--base-url", issuer],
+    ["--seed", seed],
+  ]) {
+    const index = args.indexOf(option);
+    assert.ok(index >= 0 && args[index + 1] && !args[index + 1].startsWith("--"), `Expected a value for ${option}`);
+    args[index + 1] = value;
+  }
+  report("guide", { path });
+  return { config, args };
 }
 
 async function newProfile() {
@@ -474,10 +497,10 @@ try {
     node: process.version,
     cli,
     installedCli,
-    cliVersion: execFileSync(cli, ["--version"], { encoding: "utf8" }).trim(),
+    cliVersion: execFileSync(cli, [...cliArgs, "--version"], { encoding: "utf8" }).trim(),
     appOrigin,
     issuer,
-    mode: mode === "--baseline" ? "baseline" : "candidate",
+    mode: mode?.slice(2) ?? "candidate",
   });
   execFileSync(
     "/usr/bin/openssl",
@@ -501,39 +524,42 @@ try {
     { stdio: "ignore" },
   );
   ca = await readFile(caPath);
-  await writeFile(seed, JSON.stringify(fixtureSeed(appOrigin)), { mode: 0o600 });
-  await startEmulator();
+  const guide = guideSmoke ? await readBrowserGuide() : undefined;
+  await writeFile(seed, JSON.stringify(guide?.config ?? fixtureSeed(appOrigin)), { mode: 0o600 });
+  await startEmulator(guide?.args);
   app = startChild(process.execPath, [join(fixture, "app.mjs"), appOrigin, issuer, tlsKey, caPath], true);
   await waitForHttp(() => appRequest("/"), app);
 
-  await measure("legacy Backend API reads both configured synthetic users", async () => {
-    for (const user of Object.values(users)) {
-      const response = await fetch(`${issuer}/v1/users/${user.clerk_id}`, {
-        headers: { authorization: `Bearer ${secretKey}` },
-        redirect: "error",
-      });
-      assert.equal(response.status, 200);
-      assert.equal((await response.json()).id, user.clerk_id);
-    }
-  });
-  await measure("fixture serves pinned ClerkJS and rejects disallowed proxy traffic", async () => {
-    assert.equal((await appRequest("/assets/clerk.browser.js")).status, 200);
-    for (const [path, options] of [
-      ["/v1/users"],
-      ["/v1/jwks"],
-      ["/v1/testing_tokens", { method: "POST" }],
-      ["/v1/client", { method: "PUT" }],
-      ["/v1/client?destination=x"],
-      ["/v1/client?__clerk_db_jwt=a&__clerk_db_jwt=b"],
-      ["/v1/client?debug=skip_cache"],
-      ["/v1/client", { headers: { origin: "https://different.invalid" } }],
-      ["/v1/client", { headers: { authorization: `Bearer ${secretKey}` } }],
-      ["/%2e%2e/v1/jwks"],
-      ["/../v1/jwks"],
-    ])
-      assert.equal((await appRequest(`${proxyPath}${path}`, options)).status, 403);
-    assert.equal((await appRequest("//different.invalid/v1/client")).status, 403);
-  });
+  if (!guideSmoke) {
+    await measure("legacy Backend API reads both configured synthetic users", async () => {
+      for (const user of Object.values(users)) {
+        const response = await fetch(`${issuer}/v1/users/${user.clerk_id}`, {
+          headers: { authorization: `Bearer ${secretKey}` },
+          redirect: "error",
+        });
+        assert.equal(response.status, 200);
+        assert.equal((await response.json()).id, user.clerk_id);
+      }
+    });
+    await measure("fixture serves pinned ClerkJS and rejects disallowed proxy traffic", async () => {
+      assert.equal((await appRequest("/assets/clerk.browser.js")).status, 200);
+      for (const [path, options] of [
+        ["/v1/users"],
+        ["/v1/jwks"],
+        ["/v1/testing_tokens", { method: "POST" }],
+        ["/v1/client", { method: "PUT" }],
+        ["/v1/client?destination=x"],
+        ["/v1/client?__clerk_db_jwt=a&__clerk_db_jwt=b"],
+        ["/v1/client?debug=skip_cache"],
+        ["/v1/client", { headers: { origin: "https://different.invalid" } }],
+        ["/v1/client", { headers: { authorization: `Bearer ${secretKey}` } }],
+        ["/%2e%2e/v1/jwks"],
+        ["/../v1/jwks"],
+      ])
+        assert.equal((await appRequest(`${proxyPath}${path}`, options)).status, 403);
+      assert.equal((await appRequest("//different.invalid/v1/client")).status, 403);
+    });
+  }
   browser = await chromium.launch({
     args: [
       "--disable-background-networking",
@@ -544,34 +570,58 @@ try {
   });
   report("browser", { version: browser.version() });
   const a = await newProfile();
-  await measure("anonymous browser access to protected app denied", async () => {
-    assert.equal((await a.page.goto(`${appOrigin}/protected`)).status(), 401);
-  });
-  if (mode === "--baseline") {
-    currentStage = "ClerkJS bootstrap on unchanged package";
-    await assert.rejects(() => loadClerk(a.page));
-    assert.ok(frontendLog.some(({ path, status }) => path === "/v1/dev_browser" && status === 404));
-    pass("unchanged package stops at first actual ClerkJS protocol request", { path: "/v1/dev_browser", status: 404 });
-    await measure("unchanged package lacks other planned frontend and issuance paths", async () => {
-      for (const [method, path] of [
-        ["GET", "/v1/client"],
-        ["POST", "/v1/client/sign_ins"],
-        ["POST", "/v1/testing_tokens"],
-        ["POST", "/v1/sign_in_tokens"],
-      ]) {
-        assert.equal(
-          (await fetch(`${issuer}${path}`, { method, headers: { authorization: `Bearer ${secretKey}` } })).status,
-          404,
-        );
-        report("baseline_missing", { method, path, status: 404 });
-      }
-    });
+  if (guide) {
+    await measure(
+      "installed guide signs in a seeded ClerkJS user and the Backend SDK grants protected HTTP 200",
+      async () => {
+        await loadClerk(a.page);
+        const [user] = guide.config.clerk.users;
+        const [organization] = guide.config.clerk.organizations;
+        const identity = await passwordSignIn(a, user);
+        assert.equal(identity.userId, user.clerk_id);
+        await protectedNavigation(a, "/protected", 200, {
+          ...identity,
+          orgId: organization.clerk_id,
+          orgRole: organization.members[0].role,
+          issuer,
+          party: appOrigin,
+        });
+        assert.deepEqual(offlineAttempts, []);
+      },
+    );
   } else {
-    await verifySessions(a);
+    await measure("anonymous browser access to protected app denied", async () => {
+      assert.equal((await a.page.goto(`${appOrigin}/protected`)).status(), 401);
+    });
+    if (mode === "--baseline") {
+      currentStage = "ClerkJS bootstrap on unchanged package";
+      await assert.rejects(() => loadClerk(a.page));
+      assert.ok(frontendLog.some(({ path, status }) => path === "/v1/dev_browser" && status === 404));
+      pass("unchanged package stops at first actual ClerkJS protocol request", {
+        path: "/v1/dev_browser",
+        status: 404,
+      });
+      await measure("unchanged package lacks other planned frontend and issuance paths", async () => {
+        for (const [method, path] of [
+          ["GET", "/v1/client"],
+          ["POST", "/v1/client/sign_ins"],
+          ["POST", "/v1/testing_tokens"],
+          ["POST", "/v1/sign_in_tokens"],
+        ]) {
+          assert.equal(
+            (await fetch(`${issuer}${path}`, { method, headers: { authorization: `Bearer ${secretKey}` } })).status,
+            404,
+          );
+          report("baseline_missing", { method, path, status: 404 });
+        }
+      });
+    } else {
+      await verifySessions(a);
+    }
+    await measure("browser made zero requests or handshakes to unapproved origins", async () =>
+      assert.deepEqual(offlineAttempts, []),
+    );
   }
-  await measure("browser made zero requests or handshakes to unapproved origins", async () =>
-    assert.deepEqual(offlineAttempts, []),
-  );
 } catch (error) {
   // Never serialize exceptions carrying request URLs, cookies, or token values.
   report("failed", { stage: currentStage, name: error.name, code: error.code ?? error.status });
