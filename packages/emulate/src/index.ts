@@ -21,6 +21,9 @@ Framework adapters:
   Embed emulators in app routes with @emulators/adapter-next or @emulators/adapter-nuxt.
   Docs: https://emulate.dev/docs/nextjs and https://emulate.dev/docs/nuxt
 
+Okta guide:
+  Source archive: skills/okta/SKILL.md. Use the qualified runtime revision named there.
+
 GitHub API coverage:
   Includes repository contents, raw downloads, commit history, commit details, and ref comparisons.
   Inspect minted installation-token metadata at GET /_emulate/installation-tokens.

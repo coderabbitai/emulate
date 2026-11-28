@@ -29,6 +29,8 @@ All services start with sensible defaults. No config file needed:
 Stripe webhooks configured with a secret include a `Stripe-Signature` header signed over the timestamp and raw request body.
 Chargebee webhook secrets become HTTP basic credentials instead, because Chargebee sends no signature header.
 
+For Okta seed, authentication, and OAuth examples, read the [Okta guide](skills/okta/SKILL.md). It names the qualified fork runtime revision and its limitations; the manifest version alone is not sufficient.
+
 ## CLI
 
 ```bash

@@ -22,7 +22,7 @@ Default org server and custom authorization server paths (`/oauth2/:authServerId
 - `POST /api/v1/users` — create user
 - `GET /api/v1/users/me` — current user (from token)
 - `GET /api/v1/users/:userId` — get user
-- `PUT /api/v1/users/:userId` — replace user
+- `PUT /api/v1/users/:userId` — merge supported profile fields
 - `POST /api/v1/users/:userId` — partial update
 - `DELETE /api/v1/users/:userId` — delete user
 - `GET /api/v1/users/:userId/groups` — list user groups
@@ -65,3 +65,7 @@ Default org server and custom authorization server paths (`/oauth2/:authServerId
 - `DELETE /api/v1/authorizationServers/:authServerId` — delete
 - `POST /api/v1/authorizationServers/:authServerId/lifecycle/activate` — activate
 - `POST /api/v1/authorizationServers/:authServerId/lifecycle/deactivate` — deactivate
+
+## Operation guide
+
+See the [Okta guide](https://github.com/coderabbitai/emulate/blob/coderabbit/skills/okta/SKILL.md) for seed, management authentication, and OAuth examples. Use the qualified runtime revision named in that guide and check its limitations before relying on application SDK compatibility.
