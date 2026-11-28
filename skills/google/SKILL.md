@@ -199,7 +199,11 @@ curl http://localhost:4002/.well-known/openid-configuration
 curl http://localhost:4002/oauth2/v3/certs
 ```
 
-Returns `{ "keys": [] }`. ID tokens are signed with HS256 using an internal secret.
+Returns the public RSA key for the RS256 ID tokens advertised by discovery. The ID token header includes the matching `kid`.
+
+For browser sign-in, seed a synthetic OAuth client with the app's exact callback URL. Set the app's test issuer to the emulator's advertised base URL and use discovery to find the authorize, token, and JWKS endpoints. Use `openid`, state, nonce, and S256 PKCE. For a seeded client, send its credentials in the token request body with `client_secret_post`. Keep signature, issuer, and audience validation enabled before creating an app session. If HTTPS is required, use a trusted local HTTPS proxy and set `--base-url` to its URL. Each emulator process generates its signing key at startup.
+
+The Google Node SDK's default `verifyIdToken()` path expects a PEM certificate map. Use a JWKS-capable OIDC client for the local issuer. Google's hosted sign-in UI remains on Google's own domain.
 
 ### Authorization
 
