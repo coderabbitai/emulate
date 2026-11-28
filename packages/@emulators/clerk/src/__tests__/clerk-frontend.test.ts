@@ -1,6 +1,7 @@
-import { decodeJwt, decodeProtectedHeader, importJWK, jwtVerify, type JWK } from "jose";
+import { decodeJwt, decodeProtectedHeader, importJWK, jwtVerify, SignJWT, type JWK } from "jose";
 import { Hono, Store, WebhookDispatcher, authMiddleware, type AppEnv, type TokenMap } from "@emulators/core";
 import { describe, it, expect, vi } from "vitest";
+import * as browserRuntime from "../browser.js";
 import { clerkPlugin, getClerkStore, seedFromConfig, type ClerkSeedConfig } from "../index.js";
 
 const issuer = "http://127.0.0.1:4200";
@@ -12,7 +13,13 @@ const privateMetadata = "fixture-private-sentinel";
 interface ClientReply {
   client: {
     id: string;
-    sessions: Array<{ id: string; user: { id: string }; last_active_token: { jwt: string } }>;
+    last_active_session_id: string | null;
+    sessions: Array<{
+      id: string;
+      user: { id: string };
+      last_active_token: { jwt: string };
+      last_active_organization_id: string | null;
+    }>;
   };
 }
 
@@ -76,11 +83,17 @@ function setup(browser = true, baseUrl = issuer, configuredUser?: NonNullable<Cl
     });
   }
 
-  function backend(path: string, body: object = {}, key: string | null = secretKey, method = "POST") {
+  function backend(
+    path: string,
+    body: object = {},
+    key: string | null = secretKey,
+    method = "POST",
+    scheme = "Bearer",
+  ) {
     return app.request(`${issuer}/v1/${path}`, {
       method,
       headers: {
-        ...(key ? { Authorization: `Bearer ${key}` } : {}),
+        ...(key ? { Authorization: `${scheme} ${key}` } : {}),
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
@@ -238,13 +251,47 @@ describe("Clerk browser sessions", () => {
     const a = await fixture.bootstrap();
     const first = (await fixture.signIn(a)).response.created_session_id;
     const second = (await fixture.signIn(a, "b@example.test")).response.created_session_id;
-    expect((await fixture.request(`client/sessions/${first}/end`, { client: a, method: "POST" })).status).toBe(200);
-    expect((await fixture.request(`client/sessions/${second}/tokens`, { client: a, method: "POST" })).status).toBe(200);
+    const ended = await fixture.request(`client/sessions/${second}/end`, { client: a, method: "POST" });
+    expect(ended.status).toBe(200);
+    expect((await json<ClientReply>(ended)).client.last_active_session_id).toBe(first);
+    const memberships = await fixture.request("me/organization_memberships", { client: a });
+    expect(memberships.status).toBe(200);
+    expect(await memberships.json()).toMatchObject({ response: { data: [{ role: "org:admin" }] } });
+    expect(
+      (await fixture.request(`me/organization_memberships?_clerk_session_id=${second}`, { client: a })).status,
+    ).toBe(401);
+    expect((await fixture.request(`client/sessions/${first}/tokens`, { client: a, method: "POST" })).status).toBe(200);
     expect((await fixture.request("client/sessions", { client: a, method: "POST" })).status).toBe(405);
     const logout = await fixture.request("client/sessions?_method=DELETE", { client: a, method: "POST" });
     expect(logout.status).toBe(200);
     expect((await json<ClientReply>(logout)).client.sessions).toEqual([]);
-    expect((await fixture.request(`client/sessions/${second}/tokens`, { client: a, method: "POST" })).status).toBe(401);
+    expect((await fixture.request(`client/sessions/${first}/tokens`, { client: a, method: "POST" })).status).toBe(401);
+  });
+
+  it("does not return a stale organization token when the session changes before serialization", async () => {
+    const fixture = setup();
+    const client = await fixture.bootstrap();
+    const { response } = await fixture.signIn(client);
+    const { sessions } = getClerkStore(fixture.store);
+    const session = sessions.findOneBy("clerk_id", response.created_session_id)!;
+    const sign = browserRuntime.signBrowserSession;
+    const spy = vi.spyOn(browserRuntime, "signBrowserSession").mockImplementationOnce(async (...args) => {
+      const signature = await sign(...args);
+      expect(decodeJwt(signature!.token.jwt).org_id).toBe("org_fixture");
+      sessions.update(session.id, { browser_organization_id: null });
+      return signature;
+    });
+    try {
+      const stale = await json<ClientReply>(await fixture.request("client", { client }));
+      expect(stale.client.sessions).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+    const fresh = await json<ClientReply>(await fixture.request("client", { client }));
+    expect(fresh.client.sessions).toHaveLength(1);
+    const [current] = fresh.client.sessions;
+    expect(current.last_active_organization_id).toBeNull();
+    expect(decodeJwt(current.last_active_token.jwt).org_id).toBeUndefined();
   });
 
   it("keeps legacy BAPI sessions and JWTs outside the browser client", async () => {
@@ -266,6 +313,26 @@ describe("Clerk browser sessions", () => {
 });
 
 describe("Clerk password and test credentials", () => {
+  it.each(["test@example.com", "a@example.test"])(
+    "rejects a browser seed alias already owned by another user (%s)",
+    (email) => {
+      expect(() =>
+        setup(true, issuer, {
+          clerk_id: "user_alias_fixture",
+          email_addresses: ["alias@example.test", email],
+          password,
+        }),
+      ).toThrow("Clerk browser seed email address is already owned by another user.");
+    },
+  );
+
+  it("accepts an HTTP Bearer scheme regardless of casing and keeps the key case-sensitive", async () => {
+    const fixture = setup();
+    expect((await fixture.backend("testing_tokens", {}, secretKey, "POST", "bearer")).status).toBe(200);
+    expect((await fixture.backend("users/user_fixture_a/lock", {}, secretKey, "POST", "bEaReR")).status).toBe(200);
+    expect((await fixture.backend("testing_tokens", {}, secretKey.toUpperCase(), "POST", "bearer")).status).toBe(401);
+  });
+
   it("requires a configured test key on backend changes that affect browser sessions", async () => {
     const fixture = setup();
     const oldKey = "sk_test_unknown";
@@ -489,5 +556,35 @@ describe("Clerk password and test credentials", () => {
     const foreign = await issue();
     const other = setup();
     expect((await redeem(await other.bootstrap(), foreign.token, other)).status).toBe(422);
+  });
+
+  it("keeps a ticket pending when its organization changes during signing", async () => {
+    const fixture = setup();
+    const client = await fixture.bootstrap();
+    const reply = await fixture.backend("sign_in_tokens", { user_id: "user_fixture_a" });
+    expect(reply.status).toBe(200);
+    const { token } = await json<{ token: string }>(reply);
+    const { memberships, sessions } = getClerkStore(fixture.store);
+    const membership = memberships.findBy("user_id", "user_fixture_a")[0];
+    const sign = SignJWT.prototype.sign;
+    const spy = vi.spyOn(SignJWT.prototype, "sign").mockImplementationOnce(function (this: SignJWT, ...args) {
+      expect(sessions.all()).toHaveLength(0);
+      memberships.delete(membership.id);
+      return sign.apply(this, args);
+    });
+    const redeem = () => fixture.request("client/sign_ins", { client, body: { strategy: "ticket", ticket: token } });
+    try {
+      expect((await redeem()).status).toBe(422);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(sessions.all()).toHaveLength(0);
+    const retried = await redeem();
+    expect(retried.status).toBe(200);
+    const [session] = (await json<SignInReply>(retried)).client.sessions;
+    expect(session.last_active_organization_id).toBeNull();
+    expect(decodeJwt(session.last_active_token.jwt).org_id).toBeUndefined();
+    expect(sessions.all()).toHaveLength(1);
+    expect((await redeem()).status).toBe(422);
   });
 });

@@ -35,8 +35,8 @@ export function clerkError(
 }
 
 export function hasConfiguredTestKey(c: Context<AppEnv>, tokenMap: TokenMap | undefined): boolean {
-  const header = c.req.header("Authorization");
-  const credential = header?.startsWith("Bearer ") ? header.slice(7).trim() : "";
+  const header = c.req.header("Authorization") ?? "";
+  const credential = /^Bearer\s+(.+)$/i.exec(header)?.[1]?.trim() ?? "";
   return credential.startsWith("sk_test_") && tokenMap?.has(credential) === true;
 }
 

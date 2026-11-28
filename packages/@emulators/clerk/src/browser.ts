@@ -120,18 +120,42 @@ export function activeBrowserSession(cs: ClerkStore, client: BrowserClient, id: 
   return { session, user };
 }
 
+export function preferredBrowserSessionId(client: BrowserClient, activeSessionIds: string[]) {
+  return activeSessionIds.find((id) => id === client.lastActiveSessionId) ?? activeSessionIds[0] ?? null;
+}
+
 export function browserPrimaryEmail(cs: ClerkStore, user: ClerkUser) {
   if (!user.primary_email_address_id) return undefined;
   const email = cs.emailAddresses.findOneBy("email_id", user.primary_email_address_id);
   return email?.user_id === user.clerk_id ? email : undefined;
 }
 
-export function browserMembership(cs: ClerkStore, session: ClerkSession) {
+type SessionOrganization = Pick<ClerkSession, "browser_organization_id" | "user_id">;
+type SessionForSigning = Pick<ClerkSession, "clerk_id" | "expire_at" | "abandon_at"> & SessionOrganization;
+
+export function browserMembership(cs: ClerkStore, session: SessionOrganization) {
   if (!session.browser_organization_id) return undefined;
   const organization = cs.organizations.findOneBy("clerk_id", session.browser_organization_id);
   if (!organization) return undefined;
   const membership = cs.memberships.findBy("user_id", session.user_id).find((m) => m.org_id === organization.clerk_id);
   if (membership) return { organization, membership };
+}
+
+export interface BrowserSessionSignature {
+  token: { object: "token"; jwt: string };
+  organization: ReturnType<typeof browserMembership>;
+}
+
+export function matchesSessionOrganization(
+  cs: ClerkStore,
+  session: SessionOrganization,
+  signature: BrowserSessionSignature,
+): boolean {
+  const current = browserMembership(cs, session);
+  return (
+    current?.organization === signature.organization?.organization &&
+    current?.membership === signature.organization?.membership
+  );
 }
 
 function signingKeys(browser: ClerkBrowser) {
@@ -147,43 +171,52 @@ export async function clerkBrowserJwk(store: Store) {
   return { ...jwk, kid: browser.kid, use: "sig", alg: "RS256" };
 }
 
-export async function signBrowserSession(store: Store, cs: ClerkStore, client: BrowserClient, id: string) {
+export async function signBrowserSessionSnapshot(
+  store: Store,
+  cs: ClerkStore,
+  session: SessionForSigning,
+): Promise<BrowserSessionSignature | undefined> {
   const browser = getClerkBrowser(store);
-  if (!browser || !activeBrowserSession(cs, client, id)) return undefined;
+  if (!browser) return undefined;
+  const organization = browserMembership(cs, session);
   const { privateKey } = await signingKeys(browser);
-  const active = activeBrowserSession(cs, client, id);
-  if (getClerkBrowser(store) !== browser || !active) return undefined;
-
-  const { session, user } = active;
-  const organizationLink = browserMembership(cs, session);
   const now = nowUnix();
   const jwt = await new SignJWT({
     sid: session.clerk_id,
     azp: browser.config.origin,
     fva: [0, -1],
-    ...(organizationLink && {
-      org_id: organizationLink.organization.clerk_id,
-      org_role: organizationLink.membership.role,
-      org_slug: organizationLink.organization.slug,
-      org_permissions: organizationLink.membership.permissions,
+    ...(organization && {
+      org_id: organization.organization.clerk_id,
+      org_role: organization.membership.role,
+      org_slug: organization.organization.slug,
+      org_permissions: organization.membership.permissions,
     }),
   })
     .setProtectedHeader({ alg: "RS256", typ: "JWT", kid: browser.kid, cat: CLERK_SESSION_JWT_CATEGORY })
     .setIssuer(browser.config.issuer)
-    .setSubject(user.clerk_id)
+    .setSubject(session.user_id)
     .setIssuedAt(now)
     .setNotBefore(now)
     .setExpirationTime(Math.min(now + SESSION_TOKEN_TTL_SECONDS, session.expire_at, session.abandon_at))
     .sign(privateKey);
 
+  if (getClerkBrowser(store) !== browser) return undefined;
+  return { token: { object: "token", jwt }, organization };
+}
+
+export async function signBrowserSession(store: Store, cs: ClerkStore, client: BrowserClient, id: string) {
+  const active = activeBrowserSession(cs, client, id);
+  if (!active) return undefined;
+  const { session } = active;
+  const signature = await signBrowserSessionSnapshot(store, cs, session);
   const current = activeBrowserSession(cs, client, id)?.session;
   if (
-    getClerkBrowser(store) !== browser ||
+    !signature ||
     !current ||
     current.browser_organization_id !== session.browser_organization_id ||
-    browserMembership(cs, current)?.membership !== organizationLink?.membership
+    !matchesSessionOrganization(cs, current, signature)
   ) {
     return undefined;
   }
-  return { object: "token", jwt };
+  return signature;
 }

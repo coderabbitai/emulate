@@ -92,18 +92,31 @@ export function seedFromConfig(store: Store, baseUrl: string, config: ClerkSeedC
 
   if (config.users) {
     for (const userCfg of config.users) {
-      const firstEmail = userCfg.email_addresses?.[0];
+      const addresses = browserEnabled ? [...new Set(userCfg.email_addresses)] : userCfg.email_addresses;
+      const firstEmail = addresses?.[0];
       const existingEmail = firstEmail ? cs.emailAddresses.findOneBy("email_address", firstEmail) : undefined;
       const defaultUserId = browserEnabled ? store.getData<string>(DEFAULT_SEED_USER_KEY) : undefined;
       const defaultUser =
         existingEmail && existingEmail.user_id === defaultUserId
           ? cs.users.findOneBy("clerk_id", defaultUserId)
           : undefined;
-      if (existingEmail && !defaultUser) continue;
+      if (!browserEnabled && existingEmail) continue;
 
       const clerkId = userCfg.clerk_id ?? defaultUser?.clerk_id ?? generateClerkId("user_");
       const existingUser = browserEnabled ? cs.users.findOneBy("clerk_id", clerkId) : undefined;
+      const existingPrimaryOwner = existingUser && existingEmail?.user_id === clerkId;
+      const allowedOwnerId = defaultUser?.clerk_id ?? (existingPrimaryOwner ? clerkId : undefined);
+      if (
+        browserEnabled &&
+        addresses.some((address) =>
+          cs.emailAddresses.findBy("email_address", address).some((email) => email.user_id !== allowedOwnerId),
+        )
+      ) {
+        throw new Error("Clerk browser seed email address is already owned by another user.");
+      }
+
       if (existingUser && existingUser.id !== defaultUser?.id) {
+        if (existingPrimaryOwner) continue;
         throw new Error("Clerk browser seed requires unique user IDs.");
       }
       const attributes = {
@@ -149,11 +162,10 @@ export function seedFromConfig(store: Store, baseUrl: string, config: ClerkSeedC
       }
 
       let primaryEmailId: string | null = null;
-      if (userCfg.email_addresses) {
-        for (let i = 0; i < userCfg.email_addresses.length; i++) {
-          const address = userCfg.email_addresses[i];
+      if (addresses) {
+        for (let i = 0; i < addresses.length; i++) {
+          const address = addresses[i];
           const existing = defaultUser ? cs.emailAddresses.findOneBy("email_address", address) : undefined;
-          if (existing && existing.user_id !== clerkId) continue;
           const email = existing
             ? cs.emailAddresses.update(existing.id, { is_primary: i === 0 })!
             : cs.emailAddresses.insert(createDefaultEmailAddress(clerkId, address, i === 0));

@@ -3,7 +3,14 @@
  * at 73b9c4b4a72325d49560b43450799c2880f0c403.
  */
 // Browser resources use explicit fields and never embed the Backend API's private metadata.
-import { browserMembership, browserPrimaryEmail, type BrowserClient, type BrowserSignIn } from "../browser.js";
+import {
+  browserMembership,
+  browserPrimaryEmail,
+  preferredBrowserSessionId,
+  type BrowserClient,
+  type BrowserSessionSignature,
+  type BrowserSignIn,
+} from "../browser.js";
 import type { ClerkOrganizationMembership, ClerkSession, ClerkUser } from "../entities.js";
 import { emailAddressResponse } from "../route-helpers.js";
 import type { ClerkStore } from "../store.js";
@@ -74,8 +81,14 @@ function browserUserResource(cs: ClerkStore, user: ClerkUser, primaryEmailId: st
   };
 }
 
-export function browserSessionResource(cs: ClerkStore, session: ClerkSession, user: ClerkUser, token: object | null) {
+export function browserSessionResource(
+  cs: ClerkStore,
+  session: ClerkSession,
+  user: ClerkUser,
+  signature: BrowserSessionSignature | null,
+) {
   const email = browserPrimaryEmail(cs, user);
+  const organization = signature ? signature.organization : browserMembership(cs, session);
   return {
     object: "session",
     id: session.clerk_id,
@@ -84,8 +97,8 @@ export function browserSessionResource(cs: ClerkStore, session: ClerkSession, us
     expire_at: session.expire_at * 1000,
     abandon_at: session.abandon_at * 1000,
     last_active_at: (session.last_active_at ?? session.created_at_unix) * 1000,
-    last_active_token: token,
-    last_active_organization_id: browserMembership(cs, session)?.organization.clerk_id ?? null,
+    last_active_token: signature?.token ?? null,
+    last_active_organization_id: organization?.organization.clerk_id ?? null,
     actor: null,
     tasks: [],
     user: browserUserResource(cs, user, email?.email_id ?? null),
@@ -118,7 +131,6 @@ export function browserSignInResource(signIn: BrowserSignIn) {
 }
 
 export function browserClientResource(client: BrowserClient, sessions: ReturnType<typeof browserSessionResource>[]) {
-  const current = sessions.find((session) => session.id === client.lastActiveSessionId);
   const signIn = client.signIn && client.signIn.expiresAt > Date.now() ? browserSignInResource(client.signIn) : null;
   return {
     object: "client",
@@ -126,7 +138,10 @@ export function browserClientResource(client: BrowserClient, sessions: ReturnTyp
     sessions,
     sign_up: null,
     sign_in: signIn,
-    last_active_session_id: current?.id ?? sessions[0]?.id ?? null,
+    last_active_session_id: preferredBrowserSessionId(
+      client,
+      sessions.map((session) => session.id),
+    ),
     last_authentication_strategy: signIn?.first_factor_verification?.strategy ?? null,
     cookie_expires_at: null,
     created_at: client.createdAt,

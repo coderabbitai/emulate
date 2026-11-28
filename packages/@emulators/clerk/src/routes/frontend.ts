@@ -3,19 +3,28 @@
  * at 73b9c4b4a72325d49560b43450799c2880f0c403.
  */
 // Client credentials, ownership checks, and password/ticket transitions are local to this implementation.
-import { constantTimeSecretEqual, type AppEnv, type Context, type RouteContext } from "@emulators/core";
+import {
+  constantTimeSecretEqual,
+  type AppEnv,
+  type Context,
+  type InsertInput,
+  type RouteContext,
+} from "@emulators/core";
 import {
   activeBrowserSession,
   browserCredential,
   browserPrimaryEmail,
   eligibleBrowserUser,
   getClerkBrowser,
+  matchesSessionOrganization,
   ownedBrowserSession,
+  preferredBrowserSessionId,
   signBrowserSession,
+  signBrowserSessionSnapshot,
   type BrowserClient,
   type BrowserSignIn,
 } from "../browser.js";
-import type { ClerkUser } from "../entities.js";
+import type { ClerkSession, ClerkUser } from "../entities.js";
 import { generateClerkId, nowUnix } from "../helpers.js";
 import { clerkError, readJsonBody } from "../route-helpers.js";
 import { getClerkStore, type ClerkStore } from "../store.js";
@@ -70,12 +79,12 @@ function passwordMatches(user: ClerkUser, password: string | undefined): boolean
   );
 }
 
-function completeSignIn(cs: ClerkStore, client: BrowserClient, signIn: BrowserSignIn, user: ClerkUser) {
+function newBrowserSession(cs: ClerkStore, client: BrowserClient, user: ClerkUser): InsertInput<ClerkSession> {
   const now = nowUnix();
   const org = cs.memberships
     .findBy("user_id", user.clerk_id)
     .find((membership) => cs.organizations.findOneBy("clerk_id", membership.org_id));
-  const session = cs.sessions.insert({
+  return {
     clerk_id: generateClerkId("sess_"),
     user_id: user.clerk_id,
     client_id: client.id,
@@ -87,12 +96,24 @@ function completeSignIn(cs: ClerkStore, client: BrowserClient, signIn: BrowserSi
     abandon_at: now + 604800,
     created_at_unix: now,
     updated_at_unix: now,
-  });
+  };
+}
+
+function completeSignIn(
+  cs: ClerkStore,
+  client: BrowserClient,
+  signIn: BrowserSignIn,
+  user: ClerkUser,
+  prepared = newBrowserSession(cs, client, user),
+) {
+  const now = nowUnix();
+  const session = cs.sessions.insert(prepared);
   client.sessionIds.add(session.clerk_id);
   client.lastActiveSessionId = session.clerk_id;
   signIn.sessionId = session.clerk_id;
   client.signIn = signIn;
   cs.users.update(user.id, { last_active_at: now, last_sign_in_at: now, updated_at_unix: now });
+  return session;
 }
 
 export function frontendRoutes({ app, store }: RouteContext): void {
@@ -147,15 +168,22 @@ export function frontendRoutes({ app, store }: RouteContext): void {
     return { client, credential };
   }
 
-  async function clientResource(client: BrowserClient) {
-    const tokens = await Promise.all(
+  function signClientSessions(client: BrowserClient) {
+    return Promise.all(
       Array.from(client.sessionIds, async (id) => [id, await signBrowserSession(store, cs, client, id)] as const),
     );
-    const sessions = tokens.flatMap(([id, token]) => {
+  }
+
+  function clientSessions(client: BrowserClient, signed: Awaited<ReturnType<typeof signClientSessions>>) {
+    return signed.flatMap(([id, signature]) => {
       const active = activeBrowserSession(cs, client, id);
-      return active && token ? [browserSessionResource(cs, active.session, active.user, token)] : [];
+      if (!active || !signature || !matchesSessionOrganization(cs, active.session, signature)) return [];
+      return [browserSessionResource(cs, active.session, active.user, signature)];
     });
-    return browserClientResource(client, sessions);
+  }
+
+  async function clientResource(client: BrowserClient) {
+    return browserClientResource(client, clientSessions(client, await signClientSessions(client)));
   }
 
   async function signInReply(c: Context<AppEnv>, client: BrowserClient, attempt: BrowserSignIn) {
@@ -196,11 +224,29 @@ export function frontendRoutes({ app, store }: RouteContext): void {
         }
         const email = browserPrimaryEmail(cs, user);
         const attempt = newSignIn(user, email?.email_address ?? user.clerk_id, "ticket");
-        // No await between checking the ticket, creating the session and consuming the ticket.
-        completeSignIn(cs, client, attempt, user);
+        const prepared = newBrowserSession(cs, client, user);
+        const [existing, signature] = await Promise.all([
+          signClientSessions(client),
+          signBrowserSessionSnapshot(store, cs, prepared),
+        ]);
+        const currentUser = cs.users.findOneBy("clerk_id", ticket.userId);
+        if (
+          !signature ||
+          getClerkBrowser(store) !== browser ||
+          ticket.status !== "pending" ||
+          ticket.expiresAt <= Date.now() ||
+          !eligibleBrowserUser(currentUser) ||
+          !matchesSessionOrganization(cs, prepared, signature)
+        ) {
+          return signInError(c);
+        }
+        // Publish the session and consume the ticket only after signing succeeds.
+        const session = completeSignIn(cs, client, attempt, currentUser, prepared);
         ticket.status = "accepted";
         ticket.updatedAt = Date.now();
-        return signInReply(c, client, attempt);
+        const sessions = clientSessions(client, existing);
+        sessions.push(browserSessionResource(cs, session, currentUser, signature));
+        return c.json({ response: browserSignInResource(attempt), client: browserClientResource(client, sessions) });
       }
 
       if (body.strategy !== undefined && body.strategy !== "password") return signInError(c);
@@ -278,10 +324,13 @@ export function frontendRoutes({ app, store }: RouteContext): void {
     "/v1/client/sessions/:sessionId/tokens",
     withClient(async (c, client) => {
       const id = c.req.param("sessionId");
-      const token = await signBrowserSession(store, cs, client, id);
+      const signature = await signBrowserSession(store, cs, client, id);
       // Recheck in the route as well as in the signing helper before the response starts.
-      if (!token || !activeBrowserSession(cs, client, id)) return sessionUnavailable(c, client, id);
-      return c.json(token);
+      const current = activeBrowserSession(cs, client, id);
+      if (!signature || !current || !matchesSessionOrganization(cs, current.session, signature)) {
+        return sessionUnavailable(c, client, id);
+      }
+      return c.json(signature.token);
     }),
   );
 
@@ -324,7 +373,13 @@ export function frontendRoutes({ app, store }: RouteContext): void {
   app.get(
     "/v1/me/organization_memberships",
     withClient((c, client) => {
-      const id = c.req.query("_clerk_session_id") ?? client.lastActiveSessionId ?? "";
+      const id =
+        c.req.query("_clerk_session_id") ??
+        preferredBrowserSessionId(
+          client,
+          Array.from(client.sessionIds).filter((sessionId) => activeBrowserSession(cs, client, sessionId)),
+        ) ??
+        "";
       const active = activeBrowserSession(cs, client, id);
       if (!active) return sessionUnavailable(c, client, id);
       const data = cs.memberships
