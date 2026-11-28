@@ -1,5 +1,5 @@
 import type { RouteContext } from "@emulators/core";
-import { renderCardPage, renderCheckoutPage, escapeHtml } from "@emulators/core";
+import { renderCardPage, renderCheckoutPage, renderErrorPage, escapeHtml } from "@emulators/core";
 import type { CheckoutLineItem } from "@emulators/core";
 import { getStripeStore } from "../store.js";
 import {
@@ -20,6 +20,7 @@ const CHECKOUT_TEST_CARDS = [
   { value: DECLINED_TEST_CARD, label: "Visa ending in 0002 (declines)" },
 ];
 const CHECKOUT_IDEMPOTENCY_STORE_KEY = "stripe.checkout_session_create_results";
+const INVALID_CHECKOUT_TOTAL_MESSAGE = "This Checkout session has an invalid total.";
 
 interface CheckoutCreationResult {
   parameters: string;
@@ -46,28 +47,43 @@ function canonicalParameters(value: unknown): unknown {
 export function checkoutSessionRoutes({ app, store, webhooks, baseUrl }: RouteContext): void {
   const ss = getStripeStore(store);
 
-  function priceCheckout(session: StripeCheckoutSession) {
-    const items = session.line_items.map(({ price: priceId, quantity }) => {
+  function priceCheckout(lineItems: StripeCheckoutSession["line_items"]) {
+    const items = [];
+    let total = 0;
+    let currency: string | null = null;
+    for (const { price: priceId, quantity } of lineItems) {
       const price = ss.prices.findOneBy("stripe_id", priceId);
+      const priceCurrency = price?.currency;
+      if (priceCurrency != null) {
+        if (currency !== null && priceCurrency !== currency) return null;
+        currency = priceCurrency;
+      }
       const unitPrice = price?.unit_amount ?? 0;
-      return {
+      if (!Number.isSafeInteger(quantity) || quantity < 1 || !Number.isSafeInteger(unitPrice) || unitPrice < 0) {
+        return null;
+      }
+      const totalPrice = unitPrice * quantity;
+      total += totalPrice;
+      // All amounts are nonnegative, so this also catches an unsafe line total.
+      if (!Number.isSafeInteger(total)) return null;
+
+      items.push({
         priceId,
         productId: price?.product_id,
         quantity,
         unitPrice,
-        totalPrice: unitPrice * quantity,
-        currency: price?.currency ?? "usd",
-      };
-    });
+        totalPrice,
+        currency: priceCurrency ?? "usd",
+      });
+    }
     return {
       items,
-      total: items.reduce((sum, item) => sum + item.totalPrice, 0),
-      currency: items[0]?.currency ?? null,
+      total,
+      currency: currency ?? items[0]?.currency ?? null,
     };
   }
 
-  function formatSession(session: StripeCheckoutSession) {
-    const { total, currency } = priceCheckout(session);
+  function formatSession(session: StripeCheckoutSession, pricing = priceCheckout(session.line_items)) {
     return {
       id: session.stripe_id,
       object: "checkout.session",
@@ -75,14 +91,14 @@ export function checkoutSessionRoutes({ app, store, webhooks, baseUrl }: RouteCo
       status: session.status,
       payment_status: session.payment_status,
       customer: session.customer_id,
-      amount_total: currency === null ? null : total,
-      currency,
+      amount_total: pricing && pricing.currency !== null ? pricing.total : null,
+      currency: pricing?.currency ?? null,
       success_url: session.success_url,
       cancel_url: session.cancel_url,
       metadata: session.metadata,
       created: toUnixTimestamp(session.created_at),
       livemode: false,
-      url: session.status === "open" ? `${baseUrl}/checkout/${session.stripe_id}` : null,
+      url: session.status === "open" && pricing ? `${baseUrl}/checkout/${session.stripe_id}` : null,
     };
   }
 
@@ -171,12 +187,12 @@ export function checkoutSessionRoutes({ app, store, webhooks, baseUrl }: RouteCo
           );
         }
         const qty = typeof li.quantity === "string" ? Number(li.quantity) : li.quantity;
-        if (typeof qty !== "number" || !Number.isInteger(qty) || qty < 1) {
+        if (typeof qty !== "number" || !Number.isSafeInteger(qty) || qty < 1) {
           return stripeError(
             c,
             400,
             "invalid_request_error",
-            `Invalid line_items[${i}][quantity]: must be a positive integer.`,
+            `Invalid line_items[${i}][quantity]: must be a positive safe integer.`,
             undefined,
             `line_items[${i}][quantity]`,
           );
@@ -196,6 +212,18 @@ export function checkoutSessionRoutes({ app, store, webhooks, baseUrl }: RouteCo
       }
     }
 
+    const pricing = priceCheckout(lineItems);
+    if (!pricing) {
+      return stripeError(
+        c,
+        400,
+        "invalid_request_error",
+        "Checkout line items require nonnegative whole amounts and a total within the safe integer range.",
+        undefined,
+        "line_items",
+      );
+    }
+
     let result: CheckoutCreationResult;
     try {
       const session = ss.checkoutSessions.insert({
@@ -209,7 +237,7 @@ export function checkoutSessionRoutes({ app, store, webhooks, baseUrl }: RouteCo
         line_items: lineItems,
         metadata: (body.metadata as Record<string, string>) ?? {},
       });
-      result = { parameters, status: 200, body: JSON.stringify(formatSession(session)) };
+      result = { parameters, status: 200, body: JSON.stringify(formatSession(session, pricing)) };
     } catch (error) {
       if (key === undefined) throw error;
       result = {
@@ -275,7 +303,7 @@ export function checkoutSessionRoutes({ app, store, webhooks, baseUrl }: RouteCo
     if (customerId) items = items.filter((s) => s.customer_id === customerId);
     if (status) items = items.filter((s) => s.status === status);
     if (paymentStatus) items = items.filter((s) => s.payment_status === paymentStatus);
-    return stripeList(c, items, "/v1/checkout/sessions", formatSession);
+    return stripeList(c, items, "/v1/checkout/sessions", (session) => formatSession(session));
   });
 
   app.get("/checkout/:id", (c) => {
@@ -302,7 +330,12 @@ export function checkoutSessionRoutes({ app, store, webhooks, baseUrl }: RouteCo
       );
     }
 
-    const { items, total, currency } = priceCheckout(session);
+    const pricing = priceCheckout(session.line_items);
+    if (!pricing) {
+      return c.html(renderErrorPage("Checkout Unavailable", INVALID_CHECKOUT_TOTAL_MESSAGE, SERVICE_LABEL), 400);
+    }
+
+    const { items, total, currency } = pricing;
     const lineItems: CheckoutLineItem[] = items.map(({ priceId, productId, ...item }) => {
       const product = productId ? ss.products.findOneBy("stripe_id", productId) : null;
       return { ...item, name: product?.name ?? priceId };
@@ -336,6 +369,9 @@ export function checkoutSessionRoutes({ app, store, webhooks, baseUrl }: RouteCo
       return c.redirect("/checkout/" + c.req.param("id"));
     }
 
+    const pricing = priceCheckout(session.line_items);
+    if (!pricing) return c.text(INVALID_CHECKOUT_TOTAL_MESSAGE, 400);
+
     if (testCard !== undefined && testCard !== APPROVED_TEST_CARD && testCard !== DECLINED_TEST_CARD) {
       return c.text("Select a supported test card.", 400);
     }
@@ -345,7 +381,7 @@ export function checkoutSessionRoutes({ app, store, webhooks, baseUrl }: RouteCo
 
     const updated = ss.checkoutSessions.update(session.id, { status: "complete", payment_status: "paid" })!;
 
-    await dispatchStripeEvent(webhooks, "checkout.session.completed", formatSession(updated));
+    await dispatchStripeEvent(webhooks, "checkout.session.completed", formatSession(updated, pricing));
 
     if (session.success_url) {
       const url = session.success_url.replace("{CHECKOUT_SESSION_ID}", updated.stripe_id);

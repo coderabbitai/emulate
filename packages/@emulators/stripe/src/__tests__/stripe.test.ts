@@ -574,6 +574,106 @@ describe("Stripe plugin", () => {
       });
     });
 
+    it.each([
+      ["an unsafe total", Number.MAX_SAFE_INTEGER, "usd"],
+      ["mixed currencies", 500, "eur"],
+    ])("blocks payment for a restored session with %s", async (_description, firstAmount, secondCurrency) => {
+      const { app, store, webhooks } = createTestApp();
+      seedFromConfig(
+        store,
+        base,
+        {
+          products: [{ name: "Widget" }],
+          prices: [
+            { id: "price_widget", product_name: "Widget", currency: "usd", unit_amount: firstAmount },
+            { id: "price_case", product_name: "Widget", currency: secondCurrency, unit_amount: 600 },
+          ],
+          webhooks: [
+            { url: "http://127.0.0.1:14001/webhook", events: ["checkout.session.completed"], secret: "whsec_test" },
+          ],
+        },
+        webhooks,
+      );
+      const sessionId = "cs_legacy";
+      getStripeStore(store).checkoutSessions.insert({
+        stripe_id: sessionId,
+        mode: "payment",
+        status: "open",
+        payment_status: "unpaid",
+        customer_id: null,
+        success_url: "http://localhost:3000/success",
+        cancel_url: null,
+        line_items: [
+          { price: "price_widget", quantity: 2 },
+          { price: "price_case", quantity: 1 },
+        ],
+        metadata: {},
+      });
+      store.restore(JSON.parse(JSON.stringify(store.snapshot())));
+      const mockFetch = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 204 }));
+      vi.stubGlobal("fetch", mockFetch);
+
+      const checkout = `${base}/checkout/${sessionId}`;
+      const page = await app.request(checkout);
+      expect.soft(page.status).toBe(400);
+      expect.soft((await page.text()).includes('checkout-pay-btn">')).toBe(false);
+
+      const complete = await app.request(`${checkout}/complete`, {
+        method: "POST",
+        body: new URLSearchParams({ test_card: "4242424242424242" }),
+      });
+      expect.soft(complete.status).toBe(400);
+      expect.soft(mockFetch.mock.calls).toHaveLength(0);
+
+      const readback = await app.request(`${base}/v1/checkout/sessions/${sessionId}`, { headers: auth() });
+      expect(readback.status).toBe(200);
+      const safeReadback = {
+        id: sessionId,
+        status: "open",
+        payment_status: "unpaid",
+        amount_total: null,
+        url: null,
+      };
+      expect(await readback.json()).toMatchObject(safeReadback);
+      const list = await app.request(`${base}/v1/checkout/sessions`, { headers: auth() });
+      expect(await list.json()).toMatchObject({ data: [safeReadback] });
+    });
+
+    it("keeps a zero Checkout total for null, zero and missing prices", async () => {
+      const { app, store } = createTestApp();
+      seedFromConfig(store, base, {
+        products: [{ id: "prod_widget", name: "Widget" }],
+        prices: [{ id: "price_free", product_name: "Widget", currency: "eur", unit_amount: 0 }],
+      });
+      const price = await app.request(`${base}/v1/prices`, {
+        method: "POST",
+        headers: auth(),
+        body: JSON.stringify({ product: "prod_widget", currency: "eur" }),
+      });
+      expect(price.status).toBe(200);
+      const { id, unit_amount } = (await price.json()) as { id: string; unit_amount: number | null };
+      expect(unit_amount).toBeNull();
+
+      const created = await createCheckout(app, {
+        mode: "payment",
+        line_items: [
+          { price: id, quantity: 2 },
+          { price: "price_free", quantity: 1 },
+        ],
+      });
+      expect(created.status).toBe(200);
+      const session = (await created.json()) as { id: string };
+      expect(session).toMatchObject({ amount_total: 0, currency: "eur" });
+
+      const { prices } = getStripeStore(store);
+      prices.delete(prices.findOneBy("stripe_id", id)!.id);
+      const readback = await app.request(`${base}/v1/checkout/sessions/${session.id}`, { headers: auth() });
+      expect(await readback.json()).toMatchObject({ amount_total: 0, currency: "eur" });
+      prices.delete(prices.findOneBy("stripe_id", "price_free")!.id);
+      const fallback = await app.request(`${base}/v1/checkout/sessions/${session.id}`, { headers: auth() });
+      expect(await fallback.json()).toMatchObject({ amount_total: 0, currency: "usd" });
+    });
+
     it("creates and expires a checkout session", async () => {
       const createRes = await app.request(`${base}/v1/checkout/sessions`, {
         method: "POST",
@@ -585,6 +685,7 @@ describe("Stripe plugin", () => {
       expect(session.id).toMatch(/^cs_/);
       expect(session.status).toBe("open");
       expect(session.url).toBeTruthy();
+      expect(session).toMatchObject({ amount_total: null, currency: null });
 
       const expireRes = await app.request(`${base}/v1/checkout/sessions/${session.id}/expire`, {
         method: "POST",
@@ -738,6 +839,49 @@ describe("Stripe plugin", () => {
       const retry = await createCheckout(app, params, key);
       expect(retry.status).toBe(200);
       expect(await retry.text()).toBe(original);
+      expect(getStripeStore(store).checkoutSessions.count()).toBe(1);
+    });
+
+    it.each([
+      ["negative unit amount", -1, [1]],
+      ["fractional unit amount", 1.5, [1]],
+      ["unsafe unit amount", Number.MAX_SAFE_INTEGER + 1, [1]],
+      ["non-finite unit amount", Number.POSITIVE_INFINITY, [1]],
+      ["unsafe quantity on a zero-priced item", 0, [Number.MAX_SAFE_INTEGER + 1]],
+      ["unsafe line total", Number.MAX_SAFE_INTEGER, [2]],
+      ["unsafe aggregate total", Number.MAX_SAFE_INTEGER, [1, 1]],
+    ])("rejects %s without consuming the Checkout idempotency key", async (_description, unitAmount, quantities) => {
+      const { app, store } = createTestApp();
+      seedFromConfig(store, base, {
+        products: [{ name: "Widget" }],
+        prices: [
+          { id: "price_test", product_name: "Widget", currency: "usd", unit_amount: unitAmount },
+          { id: "price_safe", product_name: "Widget", currency: "usd", unit_amount: Number.MAX_SAFE_INTEGER },
+        ],
+      });
+      const key = "safe-total";
+      const invalid = await createCheckout(
+        app,
+        {
+          mode: "payment",
+          line_items: quantities.map((quantity) => ({ price: "price_test", quantity })),
+        },
+        key,
+      );
+      expect(invalid.status).toBe(400);
+      expect(await invalid.json()).toMatchObject({ error: { type: "invalid_request_error" } });
+      expect(getStripeStore(store).checkoutSessions.count()).toBe(0);
+
+      const corrected = await createCheckout(
+        app,
+        {
+          mode: "payment",
+          line_items: [{ price: "price_safe", quantity: 1 }],
+        },
+        key,
+      );
+      expect(corrected.status).toBe(200);
+      expect(await corrected.json()).toMatchObject({ amount_total: Number.MAX_SAFE_INTEGER, currency: "usd" });
       expect(getStripeStore(store).checkoutSessions.count()).toBe(1);
     });
 
