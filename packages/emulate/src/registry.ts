@@ -493,7 +493,7 @@ export const SERVICE_REGISTRY: Record<ServiceName, ServiceEntry> = {
   clerk: {
     label: "Clerk authentication and user management emulator",
     endpoints:
-      "OIDC discovery, JWKS, OAuth authorize/token/userinfo, users, email addresses, organizations, memberships, invitations, sessions",
+      "OIDC discovery, JWKS, OAuth authorize/token/userinfo, users, email addresses, organizations, memberships, invitations, sessions, opt-in ClerkJS sign-in, testing tokens and sign-in tickets",
     async load() {
       const mod = await import("@emulators/clerk");
       return { plugin: mod.clerkPlugin, seedFromConfig: mod.seedFromConfig };

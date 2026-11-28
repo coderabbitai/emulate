@@ -472,6 +472,27 @@ aws:
 
 The emulator supports configurable OAuth apps and integrations with strict client validation.
 
+### Clerk browser sign-in
+
+Set `clerk.browser_app_origin` to your app's exact loopback HTTP(S) origin and seed synthetic users. The emulator's advertised URL must also be a loopback origin. Omit trailing slashes and paths on both. Launch the service with `npx emulate start --service clerk --seed config.yaml`. This seed uses an app at `http://localhost:3000`.
+
+```yaml
+tokens:
+  sk_test_local_clerk:
+    login: clerk-test
+clerk:
+  browser_app_origin: http://localhost:3000
+  users:
+    - email_addresses: [tester@example.test]
+      password: local-fixture-password
+```
+
+Serve the installed ClerkJS assets from your app and set ClerkJS's `proxyUrl` to a same-origin path that forwards only the frontend routes your app uses to the local Clerk service. Use a synthetic `pk_test_` publishable key that encodes a development hostname recognized by ClerkJS, such as `clerk.emulate-fixture.lcl.dev`. Send Frontend API requests through the local proxy. In browser mode, use the configured test secret on the server or test runner for testing-token and sign-in-ticket issuance and for Backend API writes to users, email addresses, organizations, and sessions.
+
+Configure app verification with the browser signing key from the emulator's local `/v1/jwks`, its advertised URL as the issuer and the app origin as the authorized party. Reloading retains the browser session. Sign-out or revocation prevents session renewal, and an already issued browser JWT can still verify until it expires. A fresh emulator run has fresh browser state and signing keys.
+
+The [browser fixture](packages/emulate/test/fixtures/clerk-browser/SETUP.md) pins ClerkJS 6.17.0, Clerk Backend 3.33.1, and Clerk Testing 2.3.9. It covers seeded password and ticket sign-in and the Playwright testing-token helper.
+
 ### Vercel Integrations
 
 ```yaml

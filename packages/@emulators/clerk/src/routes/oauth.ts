@@ -16,6 +16,7 @@ import type { ClerkUser } from "../entities.js";
 import { userDisplayName } from "../helpers.js";
 import { clerkError } from "../route-helpers.js";
 import { getClerkStore } from "../store.js";
+import { clerkBrowserJwk } from "../browser.js";
 
 const keyPairPromise = generateKeyPair("RS256");
 const KID = "emulate-clerk-1";
@@ -121,8 +122,9 @@ export function oauthRoutes({ app, store, baseUrl, tokenMap }: RouteContext): vo
   app.get("/v1/jwks", async (c) => {
     const { publicKey } = await keyPairPromise;
     const jwk = await exportJWK(publicKey);
+    const browserJwk = await clerkBrowserJwk(store);
     return c.json({
-      keys: [{ ...jwk, kid: KID, use: "sig", alg: "RS256" }],
+      keys: [{ ...jwk, kid: KID, use: "sig", alg: "RS256" }, ...(browserJwk ? [browserJwk] : [])],
     });
   });
 

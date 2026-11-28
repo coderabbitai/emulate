@@ -9,11 +9,19 @@ import { membershipRoutes } from "./routes/memberships.js";
 import { invitationRoutes } from "./routes/invitations.js";
 import { sessionRoutes } from "./routes/sessions.js";
 import { getClerkStore } from "./store.js";
+import { configureClerkBrowser, getClerkBrowser } from "./browser.js";
+import { clerkError, hasConfiguredTestKey } from "./route-helpers.js";
+import { frontendRoutes } from "./routes/frontend.js";
+import { testingRoutes } from "./routes/testing.js";
 
 export { getClerkStore, type ClerkStore } from "./store.js";
 export * from "./entities.js";
 
+const DEFAULT_SEED_USER_KEY = "clerk.seed.defaultUserId";
+const BROWSER_AUTHORITY_PATH = /^\/v1\/(?:users|email_addresses|organizations|sessions)(?:\/|$)/;
+
 export interface ClerkSeedConfig {
+  browser_app_origin?: string;
   users?: Array<{
     clerk_id?: string;
     email_addresses: string[];
@@ -55,6 +63,7 @@ function seedDefaults(store: Store, _baseUrl: string): void {
 
   const userInput = createDefaultUser();
   const user = cs.users.insert(userInput);
+  store.setData(DEFAULT_SEED_USER_KEY, user.clerk_id);
 
   const email = cs.emailAddresses.insert(createDefaultEmailAddress(user.clerk_id, "test@example.com", true));
 
@@ -74,21 +83,32 @@ function seedDefaults(store: Store, _baseUrl: string): void {
   });
 }
 
-export function seedFromConfig(store: Store, _baseUrl: string, config: ClerkSeedConfig): void {
+export function seedFromConfig(store: Store, baseUrl: string, config: ClerkSeedConfig): void {
+  const browserOrigin = config.browser_app_origin;
+  const browserEnabled = browserOrigin !== undefined;
+  if (browserEnabled) configureClerkBrowser(store, baseUrl, browserOrigin);
   const cs = getClerkStore(store);
   const now = nowUnix();
 
   if (config.users) {
     for (const userCfg of config.users) {
-      const existingEmail = userCfg.email_addresses?.[0];
-      if (existingEmail) {
-        const found = cs.emailAddresses.findOneBy("email_address", existingEmail);
-        if (found) continue;
-      }
+      const firstEmail = userCfg.email_addresses?.[0];
+      const existingEmail = firstEmail ? cs.emailAddresses.findOneBy("email_address", firstEmail) : undefined;
+      const defaultUserId = browserEnabled ? store.getData<string>(DEFAULT_SEED_USER_KEY) : undefined;
+      const defaultUser =
+        existingEmail && existingEmail.user_id === defaultUserId
+          ? cs.users.findOneBy("clerk_id", defaultUserId)
+          : undefined;
+      if (existingEmail && !defaultUser) continue;
 
-      const clerkId = userCfg.clerk_id ?? generateClerkId("user_");
-      const user = cs.users.insert({
+      const clerkId = userCfg.clerk_id ?? defaultUser?.clerk_id ?? generateClerkId("user_");
+      const existingUser = browserEnabled ? cs.users.findOneBy("clerk_id", clerkId) : undefined;
+      if (existingUser && existingUser.id !== defaultUser?.id) {
+        throw new Error("Clerk browser seed requires unique user IDs.");
+      }
+      const attributes = {
         clerk_id: clerkId,
+        browser_seeded: true,
         username: userCfg.username ?? null,
         first_name: userCfg.first_name ?? "Test",
         last_name: userCfg.last_name ?? "User",
@@ -111,14 +131,32 @@ export function seedFromConfig(store: Store, _baseUrl: string, config: ClerkSeed
         last_sign_in_at: null,
         created_at_unix: now,
         updated_at_unix: now,
-      });
+      };
+      const user = defaultUser ? cs.users.update(defaultUser.id, attributes)! : cs.users.insert(attributes);
+      if (defaultUser) {
+        for (const email of cs.emailAddresses.findBy("user_id", defaultUser.clerk_id)) {
+          cs.emailAddresses.update(email.id, { user_id: clerkId, is_primary: false });
+        }
+        if (defaultUser.clerk_id !== clerkId) {
+          for (const membership of cs.memberships.findBy("user_id", defaultUser.clerk_id)) {
+            cs.memberships.update(membership.id, { user_id: clerkId });
+          }
+          for (const session of cs.sessions.findBy("user_id", defaultUser.clerk_id)) {
+            cs.sessions.update(session.id, { user_id: clerkId });
+          }
+        }
+        store.setData(DEFAULT_SEED_USER_KEY, null);
+      }
 
       let primaryEmailId: string | null = null;
       if (userCfg.email_addresses) {
         for (let i = 0; i < userCfg.email_addresses.length; i++) {
-          const email = cs.emailAddresses.insert(
-            createDefaultEmailAddress(clerkId, userCfg.email_addresses[i], i === 0),
-          );
+          const address = userCfg.email_addresses[i];
+          const existing = defaultUser ? cs.emailAddresses.findOneBy("email_address", address) : undefined;
+          if (existing && existing.user_id !== clerkId) continue;
+          const email = existing
+            ? cs.emailAddresses.update(existing.id, { is_primary: i === 0 })!
+            : cs.emailAddresses.insert(createDefaultEmailAddress(clerkId, address, i === 0));
           if (i === 0) primaryEmailId = email.email_id;
         }
       }
@@ -220,6 +258,19 @@ export const clerkPlugin: ServicePlugin = {
   name: "clerk",
   register(app: Hono<AppEnv>, store: Store, webhooks: WebhookDispatcher, baseUrl: string, tokenMap?: TokenMap): void {
     const ctx: RouteContext = { app, store, webhooks, baseUrl, tokenMap };
+    // In browser mode, backend writes can change sign-in identities and session claims.
+    app.use("*", async (c, next) => {
+      const readOnly = c.req.method === "GET" || c.req.method === "HEAD" || c.req.method === "OPTIONS";
+      if (
+        !readOnly &&
+        BROWSER_AUTHORITY_PATH.test(c.req.path) &&
+        getClerkBrowser(store) &&
+        !hasConfiguredTestKey(c, tokenMap)
+      ) {
+        return clerkError(c, 401, "UNAUTHORIZED", "A configured Clerk test secret key is required");
+      }
+      await next();
+    });
     oauthRoutes(ctx);
     userRoutes(ctx);
     emailAddressRoutes(ctx);
@@ -227,6 +278,8 @@ export const clerkPlugin: ServicePlugin = {
     membershipRoutes(ctx);
     invitationRoutes(ctx);
     sessionRoutes(ctx);
+    frontendRoutes(ctx);
+    testingRoutes(ctx);
   },
   seed(store: Store, baseUrl: string): void {
     seedDefaults(store, baseUrl);
