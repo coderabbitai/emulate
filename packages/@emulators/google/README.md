@@ -17,7 +17,7 @@ npm install @emulators/google
 - `POST /oauth2/token` — token exchange
 - `GET /oauth2/v2/userinfo` — get user info
 - `GET /.well-known/openid-configuration` — OIDC discovery document
-- `GET /oauth2/v3/certs` — JSON Web Key Set (JWKS)
+- `GET /oauth2/v3/certs` — JSON Web Key Set (JWKS) for RS256 ID token verification
 
 ### Gmail
 - `GET /gmail/v1/users/:userId/messages` — list messages with `q`, `labelIds`, `maxResults`, and `pageToken`
@@ -77,7 +77,7 @@ npm install @emulators/google
 
 ## Auth
 
-Standard OAuth 2.0 authorization code flow. Configure clients in the seed config.
+Configure a test OAuth client and its exact callback URL in the seed config. Use `client_secret_post` to send the seeded client credentials in the token request body. Set the app's OIDC issuer to the emulator's base URL and let the app discover the authorization, token, and JWKS endpoints. Verify the RS256 signature, exact issuer, and client ID as audience before creating an app session. Each emulator process generates its signing key at startup.
 
 ## Seed Configuration
 

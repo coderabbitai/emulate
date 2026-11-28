@@ -8,7 +8,15 @@ OAuth 2.0, OpenID Connect, and mutable Google Workspace-style surfaces for local
 - `POST /oauth2/token` - token exchange
 - `GET /oauth2/v2/userinfo` - get user info
 - `GET /.well-known/openid-configuration` - OIDC discovery document
-- `GET /oauth2/v3/certs` - JSON Web Key Set (JWKS)
+- `GET /oauth2/v3/certs` - JSON Web Key Set (JWKS) with the RSA public key for RS256 ID tokens
+
+### Configure a local OIDC client
+
+1. Seed a test user and an `oauth_clients` entry with a synthetic client ID and secret. Include the app's exact callback URL in `redirect_uris`.
+2. Start Google with `npx emulate start --service google --seed emulate.config.yaml`. Configure the app's test OIDC provider with the emulator's advertised base URL as its issuer. If the client requires HTTPS, use a local HTTPS proxy with a certificate the app and browser trust, and pass the proxy URL to `--base-url`.
+3. Read `/.well-known/openid-configuration` for the authorization, token, and JWKS URLs. Use the authorization code flow with `openid`, state, nonce, and S256 PKCE. Configure `client_secret_post` so the seeded client credentials are sent in the token request body. Verify the RS256 signature with the discovered key, the exact issuer, and the client ID as audience before opening a session.
+
+Each emulator process generates a signing key with its own key ID. After a restart, the app may need to refresh a cached JWKS. This flow is for apps that accept a configurable issuer. Google's hosted sign-in UI remains on Google's own domain, and the Google Node SDK's default `verifyIdToken()` path expects a PEM certificate map.
 
 ## Gmail
 

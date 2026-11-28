@@ -787,7 +787,7 @@ OAuth 2.0, OpenID Connect, and mutable Google Workspace-style surfaces for local
 - `POST /oauth2/token` - token exchange
 - `GET /oauth2/v2/userinfo` - get user info
 - `GET /.well-known/openid-configuration` - OIDC discovery document
-- `GET /oauth2/v3/certs` - JSON Web Key Set (JWKS)
+- `GET /oauth2/v3/certs` - JSON Web Key Set (JWKS) for RS256 ID token verification
 - `GET /gmail/v1/users/:userId/messages` - list messages with `q`, `labelIds`, `maxResults`, and `pageToken`
 - `GET /gmail/v1/users/:userId/messages/:id` - fetch a Gmail-style message payload in `full`, `metadata`, `minimal`, or `raw` formats
 - `GET /gmail/v1/users/:userId/messages/:messageId/attachments/:id` - fetch attachment bodies
@@ -1280,7 +1280,7 @@ Tokens are configured in the seed config and map to users. Pass them as `Authori
 
 **GitHub**: Public repo endpoints work without auth. Private repos and write operations require a valid token. Pagination uses `page`/`per_page` with `Link` headers.
 
-**Google**: Standard OAuth 2.0 authorization code flow. Configure clients in the seed config.
+**Google**: The OAuth 2.0 authorization code flow issues RS256 ID tokens. Seed a test client with its exact callback URL, then configure your app to discover the emulator's local issuer and verify ID tokens using its JWKS. See the [Google OIDC setup](https://emulate.dev/docs/google).
 
 **Slack**: All Web API endpoints require `Authorization: Bearer <token>`. Seeded OAuth apps create local installation records, and OAuth v2 flow with user picker UI creates scoped bot tokens. Optional strict scope mode returns `missing_scope` when a token lacks a required method scope.
 
