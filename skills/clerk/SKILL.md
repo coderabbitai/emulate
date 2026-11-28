@@ -74,7 +74,9 @@ npx --no-install emulate start --service clerk --port 4011 \
 
 1. Serve ClerkJS from the app and use a synthetic `pk_test_` key encoding a ClerkJS-recognized development hostname. The fixture encodes `clerk.emulate-fixture.lcl.dev` and maps it to loopback in Chromium. Set ClerkJS's `proxyUrl` to a relative same-origin path. Forward only the Frontend API operations the app uses to the emulator. Use the reference app's proxy for redirects, headers and cookies.
 2. For protected routes, load the browser signing key from the emulator's `/v1/jwks` (the key ID starts with `emulate-clerk-browser-`). Pass its public key to the Backend SDK's `authenticateRequest`, with the app origin in `authorizedParties`. Accept signed-in requests only when the issuer also matches the advertised emulator URL. The app's verification path must use the same issuer and origin as the browser session.
-3. Use ClerkJS password sign-in with the seeded user, set the returned session active, and load a protected route. Expect HTTP 200 and confirm the signed-in user ID. The installed guide smoke in the browser fixture runs this flow. Keep the seed, emulator and browser in the same local test environment.
+3. Use ClerkJS password sign-in with the seeded user, set the returned session active, and load a protected route. Expect HTTP 200 and confirm the signed-in user ID. Keep the seed, emulator and browser in the same local test environment.
+
+To replay this flow, follow **Installed guide smoke** in `packages/emulate/test/fixtures/clerk-browser/SETUP.md` from the same Emulate source revision as this guide.
 
 For official testing-token or one-use ticket helpers, configure the synthetic `sk_test_` credential from the seed on the server or test runner. The same configured test credential is required for Backend writes to users, email addresses, organizations and sessions in browser mode. Keep the credential out of the browser.
 
