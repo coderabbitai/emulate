@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "crypto";
-import { SignJWT, exportJWK, generateKeyPair } from "jose";
+import { SignJWT, calculateJwkThumbprint, exportJWK, generateKeyPair } from "jose";
 import type { RouteContext } from "@emulators/core";
 import {
   escapeHtml,
@@ -16,9 +16,12 @@ import {
 import { getGoogleStore } from "../store.js";
 import type { GoogleUser } from "../entities.js";
 
-// RSA key pair generated at module load for signing ID tokens.
-const keyPairPromise = generateKeyPair("RS256");
-const KID = "emulate-google-1";
+// The key ID identifies this process's public key after a restart.
+const signingKeyPromise = generateKeyPair("RS256").then(async ({ privateKey, publicKey }) => {
+  const jwk = await exportJWK(publicKey);
+  const kid = await calculateJwkThumbprint(jwk);
+  return { privateKey, publicJwk: { ...jwk, kid, use: "sig", alg: "RS256" } };
+});
 
 type PendingCode = {
   email: string;
@@ -69,7 +72,7 @@ async function createIdToken(
   nonce: string | null,
   baseUrl: string,
 ): Promise<string> {
-  const { privateKey } = await keyPairPromise;
+  const { privateKey, publicJwk } = await signingKeyPromise;
 
   const builder = new SignJWT({
     sub: user.uid,
@@ -83,7 +86,7 @@ async function createIdToken(
     ...(user.hd ? { hd: user.hd } : {}),
     ...(nonce ? { nonce } : {}),
   })
-    .setProtectedHeader({ alg: "RS256", kid: KID, typ: "JWT" })
+    .setProtectedHeader({ alg: "RS256", kid: publicJwk.kid, typ: "JWT" })
     .setIssuer(baseUrl)
     .setAudience(clientId)
     .setIssuedAt()
@@ -94,17 +97,18 @@ async function createIdToken(
 
 export function oauthRoutes({ app, store, baseUrl, tokenMap }: RouteContext): void {
   const gs = getGoogleStore(store);
+  const endpointBaseUrl = baseUrl.replace(/\/+$/, "");
 
   // ---------- OIDC Discovery ----------
 
   app.get("/.well-known/openid-configuration", (c) => {
     return c.json({
       issuer: baseUrl,
-      authorization_endpoint: `${baseUrl}/o/oauth2/v2/auth`,
-      token_endpoint: `${baseUrl}/oauth2/token`,
-      userinfo_endpoint: `${baseUrl}/oauth2/v2/userinfo`,
-      revocation_endpoint: `${baseUrl}/oauth2/revoke`,
-      jwks_uri: `${baseUrl}/oauth2/v3/certs`,
+      authorization_endpoint: `${endpointBaseUrl}/o/oauth2/v2/auth`,
+      token_endpoint: `${endpointBaseUrl}/oauth2/token`,
+      userinfo_endpoint: `${endpointBaseUrl}/oauth2/v2/userinfo`,
+      revocation_endpoint: `${endpointBaseUrl}/oauth2/revoke`,
+      jwks_uri: `${endpointBaseUrl}/oauth2/v3/certs`,
       response_types_supported: ["code"],
       subject_types_supported: ["public"],
       id_token_signing_alg_values_supported: ["RS256"],
@@ -128,18 +132,8 @@ export function oauthRoutes({ app, store, baseUrl, tokenMap }: RouteContext): vo
   // ---------- JWKS ----------
 
   app.get("/oauth2/v3/certs", async (c) => {
-    const { publicKey } = await keyPairPromise;
-    const jwk = await exportJWK(publicKey);
-    return c.json({
-      keys: [
-        {
-          ...jwk,
-          kid: KID,
-          use: "sig",
-          alg: "RS256",
-        },
-      ],
-    });
+    const { publicJwk } = await signingKeyPromise;
+    return c.json({ keys: [publicJwk] });
   });
 
   // ---------- Authorization page ----------

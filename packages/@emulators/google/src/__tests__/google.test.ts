@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { Hono } from "@emulators/core";
-import { decodeJwt, decodeProtectedHeader, importJWK, jwtVerify, type JWK } from "jose";
+import { calculateJwkThumbprint, decodeJwt, decodeProtectedHeader, importJWK, jwtVerify, type JWK } from "jose";
 import {
   Store,
   WebhookDispatcher,
@@ -14,7 +14,7 @@ import { buildRawMessage } from "../helpers.js";
 
 const base = "http://localhost:4000";
 
-function createTestApp() {
+function createTestApp(advertisedBaseUrl = base) {
   const store = new Store();
   const webhooks = new WebhookDispatcher();
   const tokenMap: TokenMap = new Map();
@@ -28,9 +28,9 @@ function createTestApp() {
   app.onError(createApiErrorHandler());
   app.use("*", createErrorHandler());
   app.use("*", authMiddleware(tokenMap));
-  googlePlugin.register(app as any, store, webhooks, base, tokenMap);
-  googlePlugin.seed?.(store, base);
-  seedFromConfig(store, base, {
+  googlePlugin.register(app as any, store, webhooks, advertisedBaseUrl, tokenMap);
+  googlePlugin.seed?.(store, advertisedBaseUrl);
+  seedFromConfig(store, advertisedBaseUrl, {
     users: [
       { email: "testuser@example.com", name: "Test User" },
       { email: "consumer@gmail.com", name: "Consumer User" },
@@ -226,15 +226,26 @@ describe("Google plugin integration", () => {
     expect(body.id_token_signing_alg_values_supported).toEqual(["RS256"]);
   });
 
+  it("publishes reachable discovery endpoints when the issuer ends with a slash", async () => {
+    const { app: slashApp } = createTestApp(`${base}/`);
+    const res = await slashApp.request(`${base}/.well-known/openid-configuration`);
+    expect(res.status).toBe(200);
+    const discovery = (await res.json()) as { issuer: string; jwks_uri: string };
+
+    expect(discovery.issuer).toBe(`${base}/`);
+    expect(discovery.jwks_uri).toBe(`${base}/oauth2/v3/certs`);
+    expect((await slashApp.request(discovery.jwks_uri)).status).toBe(200);
+  });
+
   it("returns the RSA public key used to sign ID tokens", async () => {
     const res = await app.request(`${base}/oauth2/v3/certs`);
     expect(res.status).toBe(200);
 
-    const body = (await res.json()) as { keys: Array<Record<string, unknown>> };
+    const body = (await res.json()) as { keys: JWK[] };
     expect(body.keys).toHaveLength(1);
     const key = body.keys[0];
     expect(key.kty).toBe("RSA");
-    expect(key.kid).toBe("emulate-google-1");
+    expect(key.kid).toBe(await calculateJwkThumbprint(key));
     expect(key.use).toBe("sig");
     expect(key.alg).toBe("RS256");
     expect(key.n).toBeDefined();
@@ -908,10 +919,11 @@ describe("Google plugin integration", () => {
     expect(tokenBody.id_token).toBeDefined();
 
     const header = decodeProtectedHeader(tokenBody.id_token);
-    expect(header).toMatchObject({ alg: "RS256", kid: "emulate-google-1", typ: "JWT" });
 
     const jwksRes = await app.request(`${base}/oauth2/v3/certs`);
+    expect(jwksRes.status).toBe(200);
     const jwksBody = (await jwksRes.json()) as { keys: JWK[] };
+    expect(header).toMatchObject({ alg: "RS256", kid: jwksBody.keys[0].kid, typ: "JWT" });
     const { payload } = await jwtVerify(tokenBody.id_token, await importJWK(jwksBody.keys[0], "RS256"), {
       issuer: base,
       audience: "emu_google_client_id",
