@@ -2,6 +2,7 @@ import type { RouteContext } from "@emulators/core";
 import { generateClerkId, nowUnix } from "../helpers.js";
 import {
   clerkError,
+  hasConfiguredTestKey,
   requireSecretKey,
   isAuthResponse,
   paginatedResponse,
@@ -23,6 +24,7 @@ export function sessionRoutes({ app, store, baseUrl, tokenMap }: RouteContext): 
     const userIdFilter = c.req.query("user_id");
 
     let sessions = cs.sessions.all();
+    if (!hasConfiguredTestKey(c, tokenMap)) sessions = sessions.filter((session) => !session.browser_owned);
 
     if (userIdFilter) {
       sessions = sessions.filter((s) => s.user_id === userIdFilter);
@@ -41,7 +43,9 @@ export function sessionRoutes({ app, store, baseUrl, tokenMap }: RouteContext): 
 
     const sessionId = c.req.param("sessionId");
     const session = cs.sessions.findOneBy("clerk_id", sessionId);
-    if (!session) return clerkError(c, 404, "RESOURCE_NOT_FOUND", "Session not found");
+    if (!session || (session.browser_owned && !hasConfiguredTestKey(c, tokenMap))) {
+      return clerkError(c, 404, "RESOURCE_NOT_FOUND", "Session not found");
+    }
 
     return c.json(sessionResponse(session));
   });
@@ -96,6 +100,10 @@ export function sessionRoutes({ app, store, baseUrl, tokenMap }: RouteContext): 
     const session = cs.sessions.findOneBy("clerk_id", sessionId);
     if (!session) return clerkError(c, 404, "RESOURCE_NOT_FOUND", "Session not found");
 
+    if (session.browser_owned) {
+      return clerkError(c, 422, "SESSION_TOKEN_UNAVAILABLE", "Browser sessions renew through the Frontend API");
+    }
+
     if (session.status !== "active") {
       return clerkError(c, 422, "SESSION_NOT_ACTIVE", "Session is not active");
     }
@@ -134,6 +142,10 @@ export function sessionRoutes({ app, store, baseUrl, tokenMap }: RouteContext): 
     const sessionId = c.req.param("sessionId");
     const session = cs.sessions.findOneBy("clerk_id", sessionId);
     if (!session) return clerkError(c, 404, "RESOURCE_NOT_FOUND", "Session not found");
+
+    if (session.browser_owned) {
+      return clerkError(c, 422, "SESSION_TOKEN_UNAVAILABLE", "Browser sessions renew through the Frontend API");
+    }
 
     if (session.status !== "active") {
       return clerkError(c, 422, "SESSION_NOT_ACTIVE", "Session is not active");

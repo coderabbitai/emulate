@@ -1,0 +1,13 @@
+{
+  "name": "emulate-clerk-browser-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.2.2",
+  "dependencies": {
+    "@clerk/backend": "3.33.1",
+    "@clerk/clerk-js": "6.17.0",
+    "@clerk/testing": "2.3.9",
+    "@playwright/test": "1.65.1"
+  }
+}

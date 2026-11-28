@@ -90,6 +90,12 @@ The generated-secrets destination must not exist. emulate removes inherited ACLs
 
 The port can also be set via `EMULATE_PORT` or `PORT` environment variables.
 
+## Clerk browser testing
+
+Set `clerk.browser_app_origin` in the seed to the app's exact local origin and seed synthetic users. Start the service with `npx emulate start --service clerk --seed config.yaml`. Serve ClerkJS assets from the app and forward the SDK's Frontend API requests through a relative, same-origin `proxyUrl`.
+
+The app's server verifier should use the browser signing key from the local emulator's `/v1/jwks`, the advertised issuer, and the app origin as authorized party. The browser session survives reload. Signing out prevents further renewal, while an already issued JWT expires on its original schedule. Testing-token and sign-in-ticket issuance require a synthetic `sk_test_` credential configured in the seed.
+
 ## Programmatic API
 
 You can also use emulate as a library in your tests. See the [Programmatic API](/docs/programmatic-api) page for `createEmulator`, Vitest/Jest setup, and instance methods.

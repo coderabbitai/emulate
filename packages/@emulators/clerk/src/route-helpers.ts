@@ -34,6 +34,12 @@ export function clerkError(
   );
 }
 
+export function hasConfiguredTestKey(c: Context<AppEnv>, tokenMap: TokenMap | undefined): boolean {
+  const header = c.req.header("Authorization") ?? "";
+  const credential = /^Bearer\s+(.+)$/i.exec(header)?.[1]?.trim() ?? "";
+  return credential.startsWith("sk_test_") && tokenMap?.has(credential) === true;
+}
+
 export function requireSecretKey(c: Context<AppEnv>, tokenMap?: TokenMap): AuthUser | Response {
   const existing = c.get("authUser");
   if (existing) return existing;

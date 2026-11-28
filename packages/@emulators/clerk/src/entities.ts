@@ -1,6 +1,7 @@
 import type { Entity } from "@emulators/core";
 
 export interface ClerkUser extends Entity {
+  browser_seeded?: boolean;
   clerk_id: string;
   username: string | null;
   first_name: string | null;
@@ -78,6 +79,8 @@ export interface ClerkOrganizationInvitation extends Entity {
 }
 
 export interface ClerkSession extends Entity {
+  browser_owned?: boolean;
+  browser_organization_id?: string | null;
   clerk_id: string;
   user_id: string;
   client_id: string;

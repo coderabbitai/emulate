@@ -358,6 +358,12 @@ LINEAR_EMULATOR_URL=http://localhost:4012
 
 Then use these in your app to construct API and OAuth URLs. See each service's skill for SDK-specific override instructions.
 
+### Clerk browser testing
+
+Set `clerk.browser_app_origin` to the exact local app origin, seed synthetic users and start Clerk with `npx emulate start --service clerk --seed config.yaml`. Use local ClerkJS assets with a relative `proxyUrl` that forwards the Frontend API subset your app uses. Verify the protected page through the app's server SDK using the local browser signing key from `/v1/jwks`, advertised issuer and app origin as authorized party.
+
+Use a configured synthetic `sk_test_` token from the seed's top-level `tokens` map for server-side testing-token and ticket issuance and Backend API writes to users, email addresses, organizations, and sessions. Testing tokens support automation setup. Check ticket sign-in separately when the application's test helper uses it. For sign-out or revocation, check denial of session renewal and distinguish it from the expiry of an already issued JWT.
+
 ## Framework Integration (Embedded Mode)
 
 The `@emulators/adapter-next` package embeds emulators directly into a Next.js app on the same origin. See the **next** skill (`skills/next/SKILL.md`) for full setup, Auth.js configuration, persistence, and font tracing details.

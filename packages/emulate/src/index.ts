@@ -28,6 +28,10 @@ GitHub API coverage:
 Linear API coverage:
   Issue queries and mutations include numeric priority and derived priorityLabel fields.
 
+Clerk browser testing:
+  Set clerk.browser_app_origin in the seed to enable local ClerkJS sign-in.
+  Serve pinned ClerkJS assets from the app and proxy its Frontend API requests to the local emulator.
+
 Chargebee API coverage:
   Subscription lifecycle, invoicing and the time machine, which advances the clock and runs
   every renewal it makes due. Proration, tax, dunning and estimates return 501 not_emulated
